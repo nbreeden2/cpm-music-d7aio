@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code local config (project-local; not for sharing)
+.claude/
+
+# OS / editor crud
+.DS_Store
+Thumbs.db
+*.swp
+*~
