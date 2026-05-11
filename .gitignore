@@ -11,3 +11,6 @@ __pycache__/
 Thumbs.db
 *.swp
 *~
+
+# Reference PDFs (Bach sheet music etc. — kept locally, not part of repo)
+*.pdf
