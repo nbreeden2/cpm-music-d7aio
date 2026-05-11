@@ -3,7 +3,7 @@
 A single-file reference covering everything we know about the Cromemco CDOS
 "music player" (PLAY.COM) and its CP/M 2.2 ports.  Audience: anyone working
 on the player, the file format, or an emulator that needs to reproduce the
-audio faithfully (notably the High Nibble IMSAI 8080 emulator).
+audio faithfully.
 
 Deep-dive companions on disk:
 - `PLAY_COM_ANALYSIS.md` — full Z80 disassembly + analysis of PLAY.COM.
@@ -15,12 +15,20 @@ Deep-dive companions on disk:
 
 ## 1. Overview
 
-**The player** is a Cromemco-era 4-voice wavetable music program for the
-Cromemco D+7AIO analog interface card.  Each of four "Parts" (voices)
-sweeps a 16-bit phase accumulator through a 256-byte single-cycle
-wavetable; pairs of voices sum into two 8-bit DACs.  No real-time MIDI,
-no envelopes, no portamento — just four parallel oscillators reading
-from one of six pre-baked wavetables, plus a tempo knob.
+**Hardware assumption:** every program and measurement in this article
+assumes a **Cromemco D+7AIO** analog interface card (or a faithful
+emulation of one).  The D+7AIO's two analog DAC channels at I/O ports
+**19h** and **1Bh** are the only way the player produces sound.
+Without a D+7AIO (or an emulator that models it — including its
+~5 µs per-OUT WAIT state, see §2.2), the player will run but produce
+no audible output.
+
+**The player** is a Cromemco-era 4-voice wavetable music program for
+the D+7AIO.  Each of four "Parts" (voices) sweeps a 16-bit phase
+accumulator through a 256-byte single-cycle wavetable; pairs of voices
+sum into two 8-bit DACs.  No real-time MIDI, no envelopes, no
+portamento — just four parallel oscillators reading from one of six
+pre-baked wavetables, plus a tempo knob.
 
 **The four variants now on disk:**
 
