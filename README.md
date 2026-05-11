@@ -624,6 +624,48 @@ Everything *outside* that 192-byte window in PLAYZ80 is rewritten
 for CP/M 2.2.  The point of byte-identity is **audio fidelity**, not
 source-level cloning.
 
+### 8.4 PLAYZ80 command-line usage
+
+```
+A>PLAYZ80                       interactive: prompts for song, params, reps, replay
+A>PLAYZ80 BACH8.MUS             interactive: loads BACH8.MUS, then prompts for params + reps + replay
+A>PLAYZ80 BACH8.MUS /Q          quiet: loads BACH8.MUS, plays once, exits
+A>PLAYZ80 BACH8.MUS /q          case-insensitive; same as /Q
+```
+
+**`/Q` (quiet) switch.** When the command tail contains `/Q` (or
+`/q`), PLAYZ80 skips every interactive prompt and plays the song
+exactly once, then returns to the CP/M `A>` prompt.  Specifically it
+bypasses:
+
+- "Do you want to change the starting parameters?"
+- "How many repetitions?" (assumed = 1)
+- "Play it again, Sam?"
+- "New song?"
+
+The banner still prints (so you can confirm the build version) and
+the "Bye for now" message still prints on exit.
+
+**Filename order matters.**  The CCP parses the *first* filename it
+sees on the command line into the default FCB at 005Ch, so the
+song name has to come **before** the `/Q`:
+
+```
+A>PLAYZ80 BACH8.MUS /Q       correct -- song name first
+A>PLAYZ80 /Q BACH8.MUS       WRONG -- CCP tries to open "/Q" as the song file
+```
+
+**Detection details.**  PLAYZ80's `CHKQ` routine (called once at
+program entry, before any BDOS call that could overwrite the default
+DMA buffer) walks the command-tail bytes at `0080h..` looking for a
+`/` followed by `Q` or `q`.  It accepts the switch anywhere in the
+tail after the filename and ignores everything else, so `/Quiet` or
+`bach8.mus  /q  garbage` also work — only the `/Q` prefix has
+meaning.
+
+This switch is **PLAYZ80-only**.  PLAY8080 and PLAYCDOS do not
+recognize `/Q` and will behave the same way they always have.
+
 ---
 
 ## 9. Gotchas / Lessons Learned

@@ -86,6 +86,7 @@ PLSNG	EQU	0562H
 ;==================================================================
 MAIN:
 	LD	SP,STKTOP		; private stack
+	CALL	CHKQ			; scan command tail for /Q switch
 	LD	DE,MBANR
 	CALL	PRMSG
 	;
@@ -144,6 +145,10 @@ ZFCBL:
 	CALL	LDFILE
 
 ASKPLP:
+	LD	A,(QFLAG)
+	OR	A
+	JR	NZ,QPLAY1		; /q -> skip params, default 1 rep
+	;
 	LD	DE,MCHGPM
 	CALL	ASKYN
 	CALL	Z,PCHANG
@@ -153,6 +158,9 @@ ASKPLP:
 	OR	A
 	JR	NZ,GOTREP
 	LD	A,1		; default 1 repetition if user typed nothing
+	JR	GOTREP
+QPLAY1:
+	LD	A,1		; /q mode: always 1 rep
 GOTREP:
 	LD	B,A
 REPLP:
@@ -161,12 +169,17 @@ REPLP:
 	POP	BC
 	DJNZ	REPLP
 	;
+	LD	A,(QFLAG)
+	OR	A
+	JR	NZ,QEXIT		; /q -> straight to BYE + warm boot
+	;
 	LD	DE,MAGAIN
 	CALL	ASKYN
 	JR	Z,ASKPLP
 	LD	DE,MNEWS
 	CALL	ASKYN
 	JR	Z,ASKSNG
+QEXIT:
 	LD	DE,MBYE
 	CALL	PRMSG
 	JP	WBOOT
@@ -431,9 +444,45 @@ PRDONE:
 	RET
 
 ;==================================================================
+; CHKQ -- scan the CP/M command tail at 0080h for "/Q" or "/q".
+; Sets QFLAG = 1 if found, 0 otherwise.  Called once at MAIN entry
+; before anything touches the default DMA buffer.
+;
+; The filename has to come first on the command line; the CCP parses
+; the first token into the default FCB.  /q is recognized anywhere
+; after that in the tail.
+;==================================================================
+CHKQ:
+	XOR	A
+	LD	(QFLAG),A		; default: not quiet
+	LD	A,(DMA)			; A = command-tail length byte
+	OR	A
+	RET	Z			; empty tail
+	LD	B,A			; B = remaining chars
+	LD	HL,DMA+1		; HL = first char of tail
+CHKQ_LP:
+	LD	A,(HL)
+	CP	'/'
+	JR	Z,CHKQ_SLASH
+	INC	HL
+	DJNZ	CHKQ_LP
+	RET				; no '/' found
+CHKQ_SLASH:
+	INC	HL
+	DEC	B
+	RET	Z			; lone '/' at end of tail
+	LD	A,(HL)
+	AND	5FH			; uppercase
+	CP	'Q'
+	RET	NZ			; '/X' where X != Q
+	LD	A,1
+	LD	(QFLAG),A		; quiet mode armed
+	RET
+
+;==================================================================
 ; --- Strings ---
 ;==================================================================
-MBANR:	DB	CR,LF,'Music Player for CP/M 2.2, version 01.02'
+MBANR:	DB	CR,LF,'Music Player for CP/M 2.2, version 01.03'
 	DB	CR,LF,CR,LF
 	DB	'Welcome to the Wonderful World of COMPUTER MUSIC',CR,LF,'$'
 
@@ -703,6 +752,12 @@ LBUF:	DS	LBUFM + 2
 ;==================================================================
 CURPTR:	DS	2
 CURPRT:	DS	1
+
+;==================================================================
+; QFLAG -- 1 if the command tail contained /Q (or /q), 0 otherwise.
+; Set by CHKQ at MAIN entry; read at the three prompt sites.
+;==================================================================
+QFLAG:	DS	1
 
 ;==================================================================
 ; STKBUF / STKTOP -- private 48-byte stack.  PUSH grows down from
