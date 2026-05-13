@@ -644,8 +644,8 @@ in.  The table below is the at-a-glance summary kept here for context.
 | `compose_octave_steps.py` | Power-of-2 step sweep (each step doubles freq) → both `Voice_Tests/` + `New_CPM_Files/` |
 | `compose_voice_tests.py` | One file per timbre, steady A4 — for scope/tuner work → both `Voice_Tests/` + `New_CPM_Files/` |
 | `compose_calibration.py` | CALIB.MUS — the 30-second 440 Hz reference tone → `New_CPM_Files/CALIB.MUS` |
-| `midi2mus.py` | MIDI -> `.MUS` converter.  Modes `1` / `2` / `3` / `2of3` (solo / invention / sinfonia faithful / sinfonia-with-soprano-doubling).  Honors MIDI tempo changes (rubato) by varying the per-command `dur` byte.  Mode `1` has chord-moment detection that allocates up to 3 simultaneous notes across V1/V2/V3 and uses a `coverage * duration` heuristic to drop short trill ornaments instead of pinning two adjacent semitones together. |
-| `build_voices.py` | Assemble a 6-page `VOICES.MUS` from a library of named voices.  Six "original" voices come verbatim from `Original_CPM_Files/VOICES.MUS`; synthetic voices (`cello1`/`cello2`/`cello3`) are built additively.  Use one `VOICES.MUS` per disk image so each piece set gets a tailored bank without breaking PLAY.COM's 6-slot / 1536-byte expectation.  See §5.1. |
+| `midi2mus.py` | MIDI -> `.MUS` converter.  Modes `1` / `2` / `3` / `2of3` (solo / invention / sinfonia faithful / sinfonia-with-soprano-doubling).  Honors MIDI tempo changes (rubato) by varying the per-command `dur` byte.  Mode `1` has chord-moment detection that allocates up to 3 simultaneous notes across V1/V2/V3 and uses a `coverage * duration` heuristic to drop short trill ornaments instead of pinning two adjacent semitones together.  Flags: `--timbres V1,V2,V3,V4` overrides the mode's default timbre routing (e.g. `2,2,2,0` for all-triangle chiptune feel); `--merge` (mode `1` only) merges every non-drum track into one polyphonic source for multi-track arrangements. |
+| `build_voices.py` | Assemble a 6-page `VOICES.MUS` from a library of named voices.  Six "original" voices come verbatim from `Original_CPM_Files/VOICES.MUS`; synthetic voices include `cello1`/`cello2`/`cello3` (additive cello-flavored), `triangle` (NES/GB bass character), `pulse25` / `pulse12` (narrow-duty chiptune leads).  Use one `VOICES.MUS` per disk image so each piece set gets a tailored bank without breaking PLAY.COM's 6-slot / 1536-byte expectation.  See §5.1. |
 | `simulate.py` | Sample-accurate WAV renderer (mix loop in Python).  `--voices PATH` lets you point at a custom bank (defaults to `Original_CPM_Files/VOICES.MUS`); use it when previewing a `.MUS` against the disk's own per-piece bank. |
 | `decode_mus.py` | Pretty-print a `.MUS` command-by-command |
 | `analyze_voices.py` | Harmonic / waveform analysis → `voices_analysis/` |
@@ -895,7 +895,8 @@ MUSIC/
 │   ├── SinfoniaVariation_1/   (sinfonias, faithful 3-voice; --voices 3)
 │   ├── SinfoniaVariation_2/   (sinfonias, soprano-doubled; --voices 2of3)
 │   ├── CelloSuiteNumberOneinG/    (BWV 1007; --voices 1; CUSTOM VOICES.MUS with cello2 in slot 2)
-│   └── CelloSuiteNumberFourinEb/  (BWV 1010; --voices 1; CUSTOM VOICES.MUS with cello2 in slot 2)
+│   ├── CelloSuiteNumberFourinEb/  (BWV 1010; --voices 1; CUSTOM VOICES.MUS with cello2 in slot 2)
+│   └── TETRIS/                    (Korobeiniki / Tetris main theme + GB/NES remixes; --voices 1 + --merge; CUSTOM VOICES.MUS with triangle in slot 2)
 ├── Voice_Tests/               (timbre tests: .MUS + matching _sim.wav)
 └── voices_analysis/           (analyze_voices.py / plot_voices.py outputs)
 ```

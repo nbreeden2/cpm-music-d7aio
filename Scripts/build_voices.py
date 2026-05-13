@@ -113,6 +113,64 @@ def synth_cello3() -> bytes:
     return synth_cello(lowpass_corner=7.0, formant_amp=0.25)
 
 
+def synth_pulse(duty: float = 0.5) -> bytes:
+    """Pulse wave with adjustable duty cycle.
+
+      duty = 0.50  -> pure square (odd harmonics only, amplitude 1/n).
+                      Already in the original VOICES.MUS at slot 4.
+      duty = 0.25  -> classic Game Boy / NES "thin pulse" lead.  Has both
+                      odd AND even harmonics with notches at every 4th
+                      harmonic; sounds brighter and "thinner" than a 50%
+                      square but less buzzy because the spectrum is
+                      different in character.
+      duty = 0.125 -> very sharp "spike" pulse; nasal / piercing.
+
+    Peak-normalized to +/-PEAK; the wave is a hard step so wrap and
+    transition discontinuities are large (=2*PEAK), but no larger than
+    the original square voice already at slot 4.
+    """
+    samples = [0.0] * PAGE
+    pulse_end = max(1, min(PAGE - 1, int(PAGE * duty)))
+    for i in range(PAGE):
+        samples[i] = 1.0 if i < pulse_end else -1.0
+    return _quantize(samples, PEAK)
+
+
+def synth_pulse25() -> bytes:
+    """25% duty pulse -- classic chiptune lead alternative to pure square."""
+    return synth_pulse(0.25)
+
+
+def synth_pulse12() -> bytes:
+    """12.5% duty pulse -- piercing / nasal chiptune lead."""
+    return synth_pulse(0.125)
+
+
+def synth_triangle() -> bytes:
+    """Triangle wave -- NES / Game Boy bass voice.
+
+    Pure analog triangle (not the NES's 16-step staircase): linear ramp
+    up to peak at i=PAGE/4, down through zero at i=PAGE/2, to trough at
+    i=3*PAGE/4, then back up to ~0 by i=PAGE-1 ready for the wrap.
+
+    Useful as a bass voice in chiptune-style music where a pure square
+    on every voice gets too buzzy.  Triangle has odd-harmonic content
+    like square but with amplitudes falling as 1/n^2 (vs square's 1/n)
+    -- so it sounds softer / less edgy / less "buzzy" while still
+    carrying clear pitched bass content.
+    """
+    samples = [0.0] * PAGE
+    for i in range(PAGE):
+        phase = 4.0 * i / PAGE          # 0..4 over one cycle
+        if phase < 1:
+            samples[i] = phase           # 0 -> +1
+        elif phase < 3:
+            samples[i] = 2.0 - phase     # +1 -> -1
+        else:
+            samples[i] = phase - 4.0     # -1 -> 0
+    return _quantize(samples, PEAK)
+
+
 def _quantize(samples, scale):
     """Round float samples to signed 8-bit, clamp, return as little-endian
     page (each byte is two's-complement signed-8-bit)."""
@@ -129,9 +187,12 @@ def _quantize(samples, scale):
 
 ORIGINAL_NAMES = ['sine', 'even_harm', 'saw', 'oct_up', 'square', 'three_cyc']
 SYNTHETIC = {
-    'cello1': synth_cello1,
-    'cello2': synth_cello2,
-    'cello3': synth_cello3,
+    'cello1':   synth_cello1,
+    'cello2':   synth_cello2,
+    'cello3':   synth_cello3,
+    'triangle': synth_triangle,
+    'pulse25':  synth_pulse25,
+    'pulse12':  synth_pulse12,
 }
 
 

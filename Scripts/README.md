@@ -48,12 +48,13 @@ or `Voice_Tests/`.
 
 | Script | Purpose |
 |---|---|
-| [`midi2mus.py`](midi2mus.py) | Convert a MIDI file into a `.MUS` file.  Four `--voices` modes: `1` (solo line with chord-moment detection, e.g. cello suites; V1+V3 doubled when monophonic, allocated across V1/V2/V3 for 2- and 3-note chords), `2` (Bach inventions: V1+V3 doubled, V2+V4 doubled), `3` (sinfonias, three independent voices), `2of3` (sinfonia with BACH-style soprano octave doubling).  Honors MIDI tempo changes (rubato, ritardando) by varying the per-command `dur` byte; `TEMPO_BYTE` stays at 140 throughout so no player-side support is required.  `--tuning CENTS` lets you offset from concert A=440 (default 0; use `-26` to match the original BACH .MUS files on the calibrated 11,169 Hz hardware). |
+| [`midi2mus.py`](midi2mus.py) | Convert a MIDI file into a `.MUS` file.  Four `--voices` modes: `1` (solo line with chord-moment detection, e.g. cello suites; V1+V3 doubled when monophonic, allocated across V1/V2/V3 for 2- and 3-note chords), `2` (Bach inventions: V1+V3 doubled, V2+V4 doubled), `3` (sinfonias, three independent voices), `2of3` (sinfonia with BACH-style soprano octave doubling).  Honors MIDI tempo changes (rubato, ritardando) by varying the per-command `dur` byte; `TEMPO_BYTE` stays at 140 throughout so no player-side support is required.  `--tuning CENTS` offsets from concert A=440 (default 0; use `-26` to match the original BACH .MUS files on the calibrated 11,169 Hz hardware).  `--timbres V1,V2,V3,V4` overrides the mode's default timbre routing (e.g. `2,2,2,0` puts triangle on all active voices for a chiptune feel).  `--merge` (mode `1` only) reads notes from every track instead of just track 1, dropping MIDI channel 9 (GM drums) -- used for multi-track game-music arrangements. |
 
 ```
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 2            # invention
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1            # solo cello
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1 --tuning -26  # match BACH originals
+python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1 --merge --timbres 2,2,2,0  # chiptune
 ```
 
 ### Polyphony reducer (mode `1`)
@@ -71,7 +72,7 @@ difference frequency.
 
 | Script | Purpose |
 |---|---|
-| [`build_voices.py`](build_voices.py) | Assemble a 6-page (1536-byte) `VOICES.MUS` from a library of named voices.  Six "original" voices (`sine`, `even_harm`, `saw`, `oct_up`, `square`, `three_cyc`) are pulled verbatim from `Original_CPM_Files/VOICES.MUS` slots 0..5; synthetic voices are generated in-script (currently `cello1` / `cello2` / `cello3`, parameterized cello-flavored wavetables built additively from a sawtooth harmonic series with formant emphasis + low-pass shaping).  Use it to give each disk image its own tailored bank without breaking PLAY.COM's strict 6-slot / 1536-byte expectation.  `--audition NAME -o OUT.wav` renders a 3-second A4 reference tone of a single voice for A/B'ing variants. |
+| [`build_voices.py`](build_voices.py) | Assemble a 6-page (1536-byte) `VOICES.MUS` from a library of named voices.  Six "original" voices (`sine`, `even_harm`, `saw`, `oct_up`, `square`, `three_cyc`) are pulled verbatim from `Original_CPM_Files/VOICES.MUS` slots 0..5; synthetic voices in the library are `cello1` / `cello2` / `cello3` (cello-flavored, additive synthesis from a sawtooth harmonic series with parameterized formant emphasis + low-pass shaping), `triangle` (analog triangle wave -- NES/GB bass character, odd harmonics falling as 1/n^2), and `pulse25` / `pulse12` (narrow-duty pulse waves -- classic chiptune leads, with both odd and even harmonics for a "thinner" sound than the 50% square already at slot 4).  Use it to give each disk image its own tailored bank without breaking PLAY.COM's strict 6-slot / 1536-byte expectation.  `--audition NAME -o OUT.wav` renders a 3-second A4 reference tone of a single voice for A/B'ing variants. |
 
 ```
 python Scripts/build_voices.py --list                                         # show library

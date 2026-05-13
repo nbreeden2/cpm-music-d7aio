@@ -60,14 +60,22 @@ def midi_to_step(n: int, tuning_cents: float = 0.0) -> int:
     return round(freq * 65536.0 / SAMPLE_RATE) & 0xFFFF
 
 
-def extract_notes(track):
-    """Return sorted list of (start_tick, end_tick, midi_note) for one MIDI track."""
+def extract_notes(track, skip_drums=False):
+    """Return sorted list of (start_tick, end_tick, midi_note) for one MIDI track.
+
+    When skip_drums is True, notes on MIDI channel 9 (GM drum kit) are
+    dropped at note_on time -- their note numbers are drum-kit indices
+    (each MIDI note number is a different percussion instrument), not
+    pitches, so playing them through the tonal wavetable engine
+    produces noise."""
     out = []
     open_notes = {}
     t = 0
     for msg in track:
         t += msg.time
         if msg.type == 'note_on' and msg.velocity > 0:
+            if skip_drums and getattr(msg, 'channel', None) == 9:
+                continue
             open_notes[msg.note] = t
         elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
             if msg.note in open_notes:
@@ -76,6 +84,18 @@ def extract_notes(track):
     # Close any still-open notes at last event time (safety net)
     for n, start in open_notes.items():
         out.append((start, t, n))
+    return sorted(out)
+
+
+def extract_all_notes(mid, skip_drums=True):
+    """Merge note events from every track (except the conductor at index 0)
+    into one sorted (start, end, note) list.  Used by mode '1' with
+    --merge so multi-track game-music MIDIs are treated as a single
+    polyphonic source for the polyphony reducer.  Drum channel 9 is
+    dropped by default."""
+    out = []
+    for track in mid.tracks[1:]:
+        out.extend(extract_notes(track, skip_drums=skip_drums))
     return sorted(out)
 
 
@@ -159,9 +179,15 @@ def dur_byte_for_tempo(tempo_us_per_quarter: int) -> int:
 
 # ---------- conversion ----------------------------------------------------
 
-def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float = 0.0):
+def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float = 0.0,
+            timbres_override: tuple = None, merge_tracks: bool = False):
     if mode not in ('1', '2', '3', '2of3'):
         sys.exit(f"mode must be '1', '2', '3', or '2of3', got {mode!r}")
+    if timbres_override is not None:
+        if len(timbres_override) != 4 or any(not 0 <= t <= 5 for t in timbres_override):
+            sys.exit(f"--timbres must be four ints 0..5, got {timbres_override!r}")
+    if merge_tracks and mode != '1':
+        sys.exit(f"--merge is only valid with --voices 1, got mode {mode!r}")
 
     # tracks_to_extract is how many MIDI voice tracks we need to read.
     #   '1'    -> 1 voice  (solo, e.g. cello suite -- V1 sine + V3 skewed-saw doubling)
@@ -179,8 +205,14 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
         sys.exit(f"error: mode={mode!r} needs {needed_tracks} tracks "
                  f"(conductor + {tracks_to_extract} voices), got {len(mid.tracks)}")
 
-    # Extract each voice track's notes
-    voice_notes = [extract_notes(mid.tracks[i + 1]) for i in range(tracks_to_extract)]
+    # Extract each voice track's notes.  Mode '1' with --merge merges every
+    # non-conductor track's notes (drums on ch9 dropped) into one source
+    # for the polyphony reducer; otherwise each mode reads exactly its
+    # expected track-per-voice count.
+    if merge_tracks:
+        voice_notes = [extract_all_notes(mid)]
+    else:
+        voice_notes = [extract_notes(mid.tracks[i + 1]) for i in range(tracks_to_extract)]
 
     last_t = max((e for vt in voice_notes for _, e, _ in vt), default=0)
     n_cells = (last_t + cell_ticks - 1) // cell_ticks
@@ -293,6 +325,9 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
         timbres = (1, 0, 3, 2)
         chord_cells = 0
 
+    if timbres_override is not None:
+        timbres = tuple(timbres_override)
+
     # ---- emit .MUS command stream ----
     cmds = []
 
@@ -377,6 +412,8 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
     if mode == '1':
         print(f"  chord cells:   {chord_cells} of {n_cells}")
     print(f"  tuning offset: {tuning_cents:+g} cents")
+    print(f"  timbres:       V1={timbres[0]} V2={timbres[1]} V3={timbres[2]} V4={timbres[3]}"
+          + ("  (overridden)" if timbres_override is not None else ""))
     print(f"  output:        {mus_path}  ({len(data)} bytes, {len(cmds)} words)")
 
 
@@ -395,8 +432,26 @@ def main():
                     help="tuning offset from A=440 in cents (default 0; "
                          "use -26 to match the original BACH .MUS files on "
                          "calibrated 11,169 Hz hardware)")
+    ap.add_argument('--timbres', metavar='V1,V2,V3,V4',
+                    help="override the mode's default timbre routing; "
+                         "comma-separated VOICES.MUS slot indices 0..5 "
+                         "(e.g. '4,4,4,0' = all square + V4 silent for "
+                         "a chiptune feel)")
+    ap.add_argument('--merge', action='store_true',
+                    help="(--voices 1 only) merge notes from EVERY track "
+                         "into one polyphonic source, dropping MIDI "
+                         "channel 9 (GM drums).  Use for multi-track "
+                         "arrangements where the music is split across "
+                         "several instrument tracks.")
     args = ap.parse_args()
-    convert(args.source_mid, args.output_mus, args.voices, args.tuning)
+    timbres_override = None
+    if args.timbres:
+        try:
+            timbres_override = tuple(int(x) for x in args.timbres.split(','))
+        except ValueError:
+            sys.exit(f"--timbres expects comma-separated ints, got {args.timbres!r}")
+    convert(args.source_mid, args.output_mus, args.voices, args.tuning,
+            timbres_override=timbres_override, merge_tracks=args.merge)
 
 
 if __name__ == '__main__':
