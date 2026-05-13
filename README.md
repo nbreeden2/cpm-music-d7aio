@@ -45,6 +45,43 @@ hardware, and has all the modern conveniences (in-program filename
 parser, interactive params-change UI, etc.) that CDOS-specific code in
 PLAY.COM relied on the BDOS for.
 
+### 1.1 Repository layout (three top-level directories)
+
+Most of the project lives in three sibling directories.  Two of them are
+"CP/M disks" — collections of files meant to be uploaded onto a CP/M
+floppy / disk image and used from inside CP/M itself — and the third is
+the Python tooling that supports the modern half of the work.
+
+- **`Original_CPM_Files/`** — the contents of the original Cromemco CDOS
+  music floppy that started this whole project: `PLAY.COM`,
+  `VOICES.MUS`, and the eighteen CDOS-era `.MUS` songs (BACH1..BACH15,
+  ENT, GOLDEN, JILLA, LOVEBLUE, MICHAEL, ML, NEWWORLD, POMP, TEST).
+  Preserved verbatim; nothing in this folder is regenerated, edited, or
+  reassembled.  Treat it as the canonical source-of-truth disk image.
+
+- **`New_CPM_Files/`** — a modern CP/M 2.2 disk.  Contains everything
+  from `Original_CPM_Files/` (so the original CDOS songs still play)
+  **plus** CP/M-native builds of the player itself: `PLAY8080.MAC`/`.COM`
+  (8080 CP/M 2.2 port), `PLAYZ80.MAC`/`.COM` (Z80 CP/M 2.2 port — mix loop
+  byte-identical to PLAY.COM), and `PLAYCDOS.MAC`/`.COM` (M80
+  re-assembly source that produces a bit-perfect copy of the CDOS
+  original).  Also carries Microsoft M80/L80 (so you can rebuild the
+  player on the CP/M host) and the regenerated test/demo `.MUS` files
+  produced by the `compose_*.py` scripts (CALIB, CLAUDE, DOREMI,
+  OCTAVE, OCTAVES, SONG, VOICE1..6).  This is the disk you mount when
+  you want to actually play music on a CP/M machine.
+
+- **`Scripts/`** — Python tooling for the modern, host-side half of
+  the project: `.MUS` song composers, a MIDI → `.MUS` converter, a
+  sample-accurate Python simulator, `PLAY.COM` disassemblers, and a
+  battery of analysis utilities for `VOICES.MUS`.  See
+  [`Scripts/README.md`](Scripts/README.md) for the full per-script
+  breakdown and dependency notes; an abbreviated summary table is also
+  in §7 below.
+
+Two more directories (`Voice_Tests/` and `voices_analysis/`) hold
+generated artifacts and are described in the layout tree in §11.
+
 ---
 
 ## 2. Hardware Platform
@@ -552,6 +589,12 @@ All in `MUSIC/Scripts/`.  Each reads `SAMPLE_RATE` from a constant
 near the top and imports directory locations from `_paths.py`
 (`Scripts/_paths.py` is the single source of truth for project
 directory layout — update it in one place after a reorg).
+
+**Per-script reference:** [`Scripts/README.md`](Scripts/README.md) has
+the full standalone documentation — grouped descriptions, example
+invocations, and a table explaining why each third-party dependency
+(`mido`, `z80dis`, `matplotlib`) is needed and which scripts pull it
+in.  The table below is the at-a-glance summary kept here for context.
 
 | File | Purpose |
 |---|---|
