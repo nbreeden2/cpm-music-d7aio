@@ -48,10 +48,36 @@ or `Voice_Tests/`.
 
 | Script | Purpose |
 |---|---|
-| [`midi2mus.py`](midi2mus.py) | Convert a 2- or 3-track MIDI file into a `.MUS` file using the same encoding style as the original CDOS-era Bach inventions on the music disk. Three modes: `--voices 2` (inventions: V1+V3 doubled, V2+V4 doubled), `--voices 3` (sinfonias, three independent voices), `--voices 2of3` (sinfonia with BACH-style soprano octave doubling). Tunes 26 cents flat from A=440 to match the originals. |
+| [`midi2mus.py`](midi2mus.py) | Convert a MIDI file into a `.MUS` file.  Four `--voices` modes: `1` (solo line with chord-moment detection, e.g. cello suites; V1+V3 doubled when monophonic, allocated across V1/V2/V3 for 2- and 3-note chords), `2` (Bach inventions: V1+V3 doubled, V2+V4 doubled), `3` (sinfonias, three independent voices), `2of3` (sinfonia with BACH-style soprano octave doubling).  Honors MIDI tempo changes (rubato, ritardando) by varying the per-command `dur` byte; `TEMPO_BYTE` stays at 140 throughout so no player-side support is required.  `--tuning CENTS` lets you offset from concert A=440 (default 0; use `-26` to match the original BACH .MUS files on the calibrated 11,169 Hz hardware). |
 
 ```
-python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 2
+python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 2            # invention
+python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1            # solo cello
+python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1 --tuning -26  # match BACH originals
+```
+
+### Polyphony reducer (mode `1`)
+
+When more than 3 notes overlap in a single cell (typical example: sustained
+2-note bass under a fast trill), the reducer scores each candidate note by
+`cell-coverage × total-note-duration` and keeps the top 3.  Both factors
+favor structural sustained notes; short trill / mordent ornaments score
+orders of magnitude lower and get dropped.  This avoids a class of bug
+where keeping both alternation notes of a trill simultaneously would pin
+two adjacent semitones together and produce audible beats at the
+difference frequency.
+
+## Custom `VOICES.MUS` assembly
+
+| Script | Purpose |
+|---|---|
+| [`build_voices.py`](build_voices.py) | Assemble a 6-page (1536-byte) `VOICES.MUS` from a library of named voices.  Six "original" voices (`sine`, `even_harm`, `saw`, `oct_up`, `square`, `three_cyc`) are pulled verbatim from `Original_CPM_Files/VOICES.MUS` slots 0..5; synthetic voices are generated in-script (currently `cello1` / `cello2` / `cello3`, parameterized cello-flavored wavetables built additively from a sawtooth harmonic series with formant emphasis + low-pass shaping).  Use it to give each disk image its own tailored bank without breaking PLAY.COM's strict 6-slot / 1536-byte expectation.  `--audition NAME -o OUT.wav` renders a 3-second A4 reference tone of a single voice for A/B'ing variants. |
+
+```
+python Scripts/build_voices.py --list                                         # show library
+python Scripts/build_voices.py --audition cello2 -o cello2_A4.wav             # audition one voice
+python Scripts/build_voices.py --replace 2=cello2 -o OUT.MUS                  # one slot override
+python Scripts/build_voices.py --slots sine even_harm cello2 oct_up square three_cyc -o OUT.MUS
 ```
 
 ## Playback simulation / inspection

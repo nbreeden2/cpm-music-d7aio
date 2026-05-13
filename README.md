@@ -454,6 +454,44 @@ calibration workflow that uses them.
 See `VOICES_MUS_ANALYSIS.md` for the harmonic content of each
 wavetable.
 
+### 5.1 Custom per-disk `VOICES.MUS` banks
+
+The "6 voices, 1536 bytes, named VOICES.MUS" layout is a hard contract
+with PLAY.COM and the CP/M ports — the file is loaded page-aligned at a
+fixed memory address and indexed by `0x81 + slot` in the song stream.
+Changing the count, the page size, or the filename breaks the player.
+
+What you *can* do is swap individual slot contents per disk.  Each
+CP/M disk image (Bach inventions, sinfonias, cello suites, etc.) gets
+its own self-contained VOICES.MUS sitting next to the song files.
+The Bach disk keeps the original CDOS bank verbatim; the cello-suite
+disk replaces slot 2 (the skewed-saw position that `midi2mus.py`'s
+mode `1` already routes V3 to) with a cello-flavored wavetable while
+keeping slots 0/1/3/4/5 byte-identical to the original.
+
+[`Scripts/build_voices.py`](Scripts/build_voices.py) drives this:
+it maintains a library of named voices (six pulled verbatim from
+`Original_CPM_Files/VOICES.MUS`, plus parameterized synthetic
+`cello1` / `cello2` / `cello3` built additively from a sawtooth
+harmonic series with a Gaussian formant emphasis at H3 and a 4th-order
+low-pass at H7..H10).  Pick six and write a bank, or start from a base
+file and override individual slots:
+
+```
+python Scripts/build_voices.py --list
+python Scripts/build_voices.py --audition cello2 -o cello2_A4.wav
+python Scripts/build_voices.py --replace 2=cello2 -o MIDI/CelloSuiteNumberOneinG/VOICES.MUS
+```
+
+**Caveat on "formant" character.**  Wavetable synthesis can't reproduce
+a real cello's *fixed* body resonance (~250 Hz on a real instrument,
+regardless of which note is bowed).  In a wavetable the spectrum
+scales with pitch, so the cello character is stronger than the
+existing skewed-saw but won't be indistinguishable from a real
+recording.  A multi-wavetable register-switching trick (converter
+emits per-pitch timbre changes via dispatch bit 4) could approximate a
+fixed formant later; current banks just use one cello slot.
+
 ---
 
 ## 6. Timing & Sample-Rate Calibration
@@ -606,7 +644,9 @@ in.  The table below is the at-a-glance summary kept here for context.
 | `compose_octave_steps.py` | Power-of-2 step sweep (each step doubles freq) → both `Voice_Tests/` + `New_CPM_Files/` |
 | `compose_voice_tests.py` | One file per timbre, steady A4 — for scope/tuner work → both `Voice_Tests/` + `New_CPM_Files/` |
 | `compose_calibration.py` | CALIB.MUS — the 30-second 440 Hz reference tone → `New_CPM_Files/CALIB.MUS` |
-| `simulate.py` | Sample-accurate WAV renderer (mix loop in Python).  `--voices` defaults to `Original_CPM_Files/VOICES.MUS` |
+| `midi2mus.py` | MIDI -> `.MUS` converter.  Modes `1` / `2` / `3` / `2of3` (solo / invention / sinfonia faithful / sinfonia-with-soprano-doubling).  Honors MIDI tempo changes (rubato) by varying the per-command `dur` byte.  Mode `1` has chord-moment detection that allocates up to 3 simultaneous notes across V1/V2/V3 and uses a `coverage * duration` heuristic to drop short trill ornaments instead of pinning two adjacent semitones together. |
+| `build_voices.py` | Assemble a 6-page `VOICES.MUS` from a library of named voices.  Six "original" voices come verbatim from `Original_CPM_Files/VOICES.MUS`; synthetic voices (`cello1`/`cello2`/`cello3`) are built additively.  Use one `VOICES.MUS` per disk image so each piece set gets a tailored bank without breaking PLAY.COM's 6-slot / 1536-byte expectation.  See §5.1. |
+| `simulate.py` | Sample-accurate WAV renderer (mix loop in Python).  `--voices PATH` lets you point at a custom bank (defaults to `Original_CPM_Files/VOICES.MUS`); use it when previewing a `.MUS` against the disk's own per-piece bank. |
 | `decode_mus.py` | Pretty-print a `.MUS` command-by-command |
 | `analyze_voices.py` | Harmonic / waveform analysis → `voices_analysis/` |
 | `plot_voices.py` | Matplotlib stacked plot of all 6 wavetables → `voices_analysis/voices_stacked.{png,svg}` |
@@ -615,7 +655,7 @@ in.  The table below is the at-a-glance summary kept here for context.
 | `verify_octave_trick.py` | Spectral verification of the V3/V5 octave-shift |
 | `disasm.py` | Z80 linear-sweep disassembler harness (reads `Original_CPM_Files/PLAY.COM`) |
 | `disasm_m80.py` | Generate a regenerated M80-format source (writes `PLAYCDOS_regenerated.MAC` to project root; do **not** clobber the hand-edited `New_CPM_Files/PLAYCDOS.MAC`) |
-| `CPMFMT.PY` (top level) | Convert .MAC/.INC files to CP/M text format (CRLF + Ctrl-Z) |
+| `CPMFMT.PY` (top level) | Convert `.MAC` / `.INC` / `.SUB` files to CP/M text format (CRLF + Ctrl-Z; INCLUDE expansion for `.MAC`).  Run after every Write/Edit on a CP/M-bound text file. |
 
 ### 7.1 `simulate.py` caveat
 
@@ -848,10 +888,26 @@ MUSIC/
 │   ├── VOICES.MUS, BACH*.MUS  (originals copied here for playback)
 │   └── CALIB / CLAUDE / DOREMI / OCTAVE / OCTAVES / SONG / VOICE1-6.MUS (regenerated)
 ├── Scripts/                   (all .py tooling)
-│   └── _paths.py              (single source of truth for project paths)
+│   ├── _paths.py              (single source of truth for project paths)
+│   └── README.md              (per-script reference)
+├── MIDI/                      (MIDI-sourced piece sets; one disk image per subfolder)
+│   ├── Invention/             (Bach 2-part inventions BWV 772-786; --voices 2)
+│   ├── SinfoniaVariation_1/   (sinfonias, faithful 3-voice; --voices 3)
+│   ├── SinfoniaVariation_2/   (sinfonias, soprano-doubled; --voices 2of3)
+│   ├── CelloSuiteNumberOneinG/    (BWV 1007; --voices 1; CUSTOM VOICES.MUS with cello2 in slot 2)
+│   └── CelloSuiteNumberFourinEb/  (BWV 1010; --voices 1; CUSTOM VOICES.MUS with cello2 in slot 2)
 ├── Voice_Tests/               (timbre tests: .MUS + matching _sim.wav)
 └── voices_analysis/           (analyze_voices.py / plot_voices.py outputs)
 ```
+
+Each `MIDI/<piece-set>/` folder is laid out to map 1:1 onto a CP/M disk
+image: the source `.mid` files, the converted `.MUS` files, a
+`CELLO.SUB` / `INVENT.SUB` / `SINFONIA.SUB` batch to play them
+back-to-back, simulator preview `*_sim.wav` files, and -- for the
+cello suites -- a self-contained custom `VOICES.MUS` that overrides
+slot 2 with a cello-flavored wavetable.  Upload the folder's contents
+verbatim to a CP/M disk and `SUBMIT CELLO` (or equivalent) plays the
+whole set with the right timbres.
 
 Annotated source/disassembly for PLAY.COM lives in
 `New_CPM_Files/PLAYCDOS.MAC` (the M80 source) — heavily commented with
