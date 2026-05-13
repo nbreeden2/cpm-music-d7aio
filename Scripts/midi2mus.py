@@ -88,13 +88,18 @@ def extract_notes(track, skip_drums=False):
 
 
 def extract_all_notes(mid, skip_drums=True):
-    """Merge note events from every track (except the conductor at index 0)
-    into one sorted (start, end, note) list.  Used by mode '1' with
-    --merge so multi-track game-music MIDIs are treated as a single
-    polyphonic source for the polyphony reducer.  Drum channel 9 is
-    dropped by default."""
+    """Merge note events from EVERY track into one sorted (start, end, note)
+    list.  Used by mode '1' with --merge so multi-track MIDIs are treated
+    as a single polyphonic source for the polyphony reducer.  Drum channel
+    9 is dropped by default.
+
+    NB: type-1 MIDI files conventionally put tempo / meta on track 0 and
+    notes on tracks 1+, but not always -- some files have notes on track
+    0 too (or are type-0 = everything on a single track).  Scanning all
+    tracks is robust to both conventions; conductor-only tracks
+    contribute zero notes naturally."""
     out = []
-    for track in mid.tracks[1:]:
+    for track in mid.tracks:
         out.extend(extract_notes(track, skip_drums=skip_drums))
     return sorted(out)
 
