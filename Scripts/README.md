@@ -89,6 +89,16 @@ python Scripts/build_voices.py --slots sine even_harm cello2 oct_up square three
 | [`simulate.py`](simulate.py) | Sample-accurate software model of the PLAYZ80 / PLAY.COM mix loop. Reads a `.MUS` plus `VOICES.MUS`, runs the same `phase += step` / wavetable-lookup / signed-add the player does, and writes a 16-bit mono WAV at the calibrated 11,169 Hz rate. Useful for previewing a `.MUS` without uploading to the IMSAI. |
 | [`decode_mus.py`](decode_mus.py) | Pretty-print a `.MUS` file as the sequence of commands the player would see (`cmd`, bitmap, duration, per-voice pitches with note names + cents error, timbre indices, tempo, ms per command). Optional `--limit N` to truncate. |
 
+## Disk-image documentation
+
+| Script | Purpose |
+|---|---|
+| [`_gen_disk_readme.py`](_gen_disk_readme.py) | Generate the `README.TXT` that lives inside each `Bach*.unpacked/0/` disk image — a CP/M-shaped (CRLF + Ctrl-Z) text file describing the music, files, conversion process, D+7AIO port assignments, ASCII mixer schematic, and links to fdcServer + the project repo. Writes the same content to **two** locations per disk: the committed archive `<repo>/Disks/<disk>.unpacked/0/README.TXT` and the live emulator `D:/CPMEMU/disks/<disk>.unpacked/0/README.TXT`. Per-disk blurbs (title, music paragraph, file table, conversion paragraph) are in the `DISKS` dict at the top of the script; shared boilerplate (player description, mixer schematic, disk-format explanation, repo + email footer) is constants further down. Run after editing any of those. |
+
+```
+python Scripts/_gen_disk_readme.py
+```
+
 ```
 python Scripts/simulate.py New_CPM_Files/CLAUDE.MUS -o CLAUDE.wav
 python Scripts/decode_mus.py New_CPM_Files/CLAUDE.MUS --limit 40

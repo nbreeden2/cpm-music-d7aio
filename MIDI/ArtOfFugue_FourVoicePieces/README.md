@@ -70,9 +70,16 @@ python Scripts/simulate.py MIDI/ArtOfFugue_FourVoicePieces/CNT1.MUS \
        -o MIDI/ArtOfFugue_FourVoicePieces/CNT1_sim.wav
 ```
 
-The matching CP/M-side `.unpacked` disk image lives at
-`D:/CPMEMU/disks/BachAOF-4v.unpacked/0/` and carries `PLAYZ80.COM`,
-`VOICES.MUS`, the twelve `.MUS` files, and `AOF.SUB`.
+The matching CP/M-side disk image is committed in
+[`Disks/BachAOF-4v.unpacked/`](../../Disks/BachAOF-4v.unpacked/) (host-side
+folder tree) and [`Disks/BachAOF-4v.dsk`](../../Disks/BachAOF-4v.dsk)
+(packed 256-sector floppy image for fdcServer / Z80Pack).  Both
+forms carry `PLAYZ80.COM`, `VOICES.MUS`, the twelve `.MUS` files,
+`AOF.SUB` / `AOF.QSB`, and a CP/M-shaped `README.TXT`.  A live
+working copy of the unpacked tree also lives at
+`D:/CPMEMU/disks/BachAOF-4v.unpacked/0/` for fdcServer to mount;
+`Scripts/_gen_disk_readme.py` writes the per-disk `README.TXT` to
+both locations so they stay in sync.
 
 See the project root [`README.md`](../../README.md) for the `.MUS`
 format, the 4-voice-mode design, and the calibration that ties the

@@ -1,14 +1,28 @@
 """Generate README.TXT for each Bach*.unpacked CP/M disk image.
 
-Run once after this script is updated; outputs to
-D:/CPMEMU/disks/<disk>.unpacked/0/README.TXT for each disk listed
-in DISKS below.  The file is plain ASCII; CPMFMT.PY adds CRLF +
-Ctrl-Z afterward.
+Writes the same README.TXT to TWO locations for each disk listed
+in DISKS below:
+
+  - D:/CPMEMU/disks/<disk>.unpacked/0/README.TXT   (live emulator)
+  - <repo-root>/Disks/<disk>.unpacked/0/README.TXT (committed archive)
+
+Both files are emitted as CP/M text (CRLF line endings + trailing
+0x1A Ctrl-Z), so no separate CPMFMT.PY pass is needed.
+
+Run after editing any per-disk blurb in DISKS or any of the shared
+boilerplate sections below.  Missing target folders are skipped with
+a note; the script does not create disk-image folders, only the
+README.TXT inside them.
 """
 from pathlib import Path
 from textwrap import dedent
 
-DISK_ROOT = Path("D:/CPMEMU/disks")
+# Two sibling locations -- live emulator working tree + committed
+# archive in the repo.  Update both whenever README.TXT changes.
+DISK_ROOTS = [
+    Path("D:/CPMEMU/disks"),                            # live (cpmemu reads from here)
+    Path(__file__).resolve().parent.parent / "Disks",   # committed archive (Disks/ at repo root)
+]
 
 # Per-disk metadata.  Each value is the body of the "THE MUSIC",
 # "FILES ON THIS DISK", and "CONVERSION PROCESS" sections.  The
@@ -592,10 +606,16 @@ def main():
     # to be run after this generator -- the output is already valid
     # CP/M text.
     for name, meta in DISKS.items():
-        dst = DISK_ROOT / f"{name}.unpacked" / "0" / "README.TXT"
         body = render(name, meta).replace("\r\n", "\n").replace("\n", "\r\n")
-        dst.write_bytes(body.encode("ascii") + b"\x1a")
-        print(f"wrote {dst}  ({dst.stat().st_size} bytes)")
+        payload = body.encode("ascii") + b"\x1a"
+        for root in DISK_ROOTS:
+            parent = root / f"{name}.unpacked" / "0"
+            if not parent.is_dir():
+                print(f"skip {parent} (no such folder)")
+                continue
+            dst = parent / "README.TXT"
+            dst.write_bytes(payload)
+            print(f"wrote {dst}  ({dst.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

@@ -93,10 +93,16 @@ python Scripts/simulate.py \
     -o MIDI/WellTemperedClavierBookTwo_PreludesAndFugues/PRELUDE1_sim.wav
 ```
 
-The matching CP/M-side `.unpacked` disk image lives at
-`D:/CPMEMU/disks/BachWTC2.unpacked/0/` and carries `PLAYZ80.COM`,
-`VOICES.MUS`, the 21 `.MUS` files, `WTCBKII.SUB`, `WTCBKII.QSB`,
-and a CP/M-shaped `README.TXT`.
+The matching CP/M-side disk image is committed in
+[`Disks/BachWTC2.unpacked/`](../../Disks/BachWTC2.unpacked/) (host-side
+folder tree) and [`Disks/BachWTC2.dsk`](../../Disks/BachWTC2.dsk)
+(packed 256-sector floppy image for fdcServer / Z80Pack).  Both
+forms carry `PLAYZ80.COM`, `VOICES.MUS`, the 21 `.MUS` files,
+`WTCBKII.SUB` / `WTCBKII.QSB`, and a CP/M-shaped `README.TXT`.
+A live working copy of the unpacked tree also lives at
+`D:/CPMEMU/disks/BachWTC2.unpacked/0/` for fdcServer to mount;
+`Scripts/_gen_disk_readme.py` writes the per-disk `README.TXT` to
+both locations so they stay in sync.
 
 See the project root [`README.md`](../../README.md) for the `.MUS`
 format, the polyphony-reducer design, and the calibration that ties
