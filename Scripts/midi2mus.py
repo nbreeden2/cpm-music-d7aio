@@ -22,6 +22,14 @@ Polyphony:
     cells trade that doubling for the additional pitches, mirroring
     what a cellist does on a double-stop (less bow per string).
 
+    --voices 4 reads four monophonic MIDI voice tracks and maps them
+    one-to-one onto V1..V4 (SATB style: V1=soprano, V2=alto,
+    V3=tenor, V4=bass).  Use for 4-part chorales, 4-voice fugues
+    (WTC, Art of Fugue), and anything else with four independent
+    contrapuntal lines.  Default timbres are (sine, saw, square,
+    sine) so every voice plays at its written pitch -- no
+    octave-shifting timbres (1/3/5) in the default routing.
+
 Tuning:
     --tuning defaults to 0 cents (concert pitch A=440) for new content.
     Pass --tuning -26 to match the original BACH .MUS files on the
@@ -186,8 +194,8 @@ def dur_byte_for_tempo(tempo_us_per_quarter: int) -> int:
 
 def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float = 0.0,
             timbres_override: tuple = None, merge_tracks: bool = False):
-    if mode not in ('1', '2', '3', '2of3'):
-        sys.exit(f"mode must be '1', '2', '3', or '2of3', got {mode!r}")
+    if mode not in ('1', '2', '3', '4', '2of3'):
+        sys.exit(f"mode must be '1', '2', '3', '4', or '2of3', got {mode!r}")
     if timbres_override is not None:
         if len(timbres_override) != 4 or any(not 0 <= t <= 5 for t in timbres_override):
             sys.exit(f"--timbres must be four ints 0..5, got {timbres_override!r}")
@@ -198,8 +206,9 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
     #   '1'    -> 1 voice  (solo, e.g. cello suite -- V1 sine + V3 skewed-saw doubling)
     #   '2'    -> 2 voices (BACH inventions)
     #   '3'    -> 3 voices (sinfonias, faithful)
+    #   '4'    -> 4 voices (SATB chorales, 4-voice fugues)
     #   '2of3' -> 3 voices (sinfonias, soprano gets BACH-style octave doubling)
-    tracks_to_extract = {'1': 1, '2': 2, '3': 3, '2of3': 3}[mode]
+    tracks_to_extract = {'1': 1, '2': 2, '3': 3, '4': 4, '2of3': 3}[mode]
 
     mid = mido.MidiFile(mid_path)
     ppqn = mid.ticks_per_beat
@@ -312,6 +321,24 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
         v4 = [0] * n_cells
         timbres = (0, 1, 2, 0)
         chord_cells = 0
+    elif mode == '4':
+        # SATB: V1=soprano, V2=alto, V3=tenor, V4=bass.  Each voice is
+        # monophonic per cell (note_at_cell picks the earliest attack if
+        # the source track contains ornaments).  Default timbres are all
+        # written-pitch (sine/saw/square) -- no octave-shifting timbres,
+        # since each voice already plays its written pitch.
+        voice_steps = []
+        for vt in voice_notes:
+            steps = []
+            for c in range(n_cells):
+                t0 = c * cell_ticks
+                t1 = (c + 1) * cell_ticks
+                n = note_at_cell(vt, t0, t1)
+                steps.append(midi_to_step(n, tuning_cents) if n is not None else 0)
+            voice_steps.append(steps)
+        v1, v2, v3, v4 = voice_steps
+        timbres = (0, 2, 4, 0)
+        chord_cells = 0
     else:  # '2of3'
         voice_steps = []
         for vt in voice_notes:
@@ -400,6 +427,7 @@ def convert(mid_path: str, mus_path: str, mode: str = '2', tuning_cents: float =
         '1':    '1-voice solo (V1 sine + V3 skewed-saw doubling, V2/V4 silent)',
         '2':    '2-voice (BACH style: V1+V3, V2+V4 doubled)',
         '3':    '3-voice (V1, V2, V3 independent; V4 silent)',
+        '4':    '4-voice SATB (V1=sop sine, V2=alt saw, V3=ten sq, V4=bass sine)',
         '2of3': '2of3 sinfonia (V1+V3 soprano fund+octave, V2 alto, V4 bass)',
     }[mode]
     min_bpm = 60_000_000 / max(t for _, t in tempo_map)
@@ -428,10 +456,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('source_mid')
     ap.add_argument('output_mus')
-    ap.add_argument('--voices', default='2', choices=['1', '2', '3', '2of3'],
+    ap.add_argument('--voices', default='2', choices=['1', '2', '3', '4', '2of3'],
                     help="1 = solo (V1 sine + V3 saw doubling; V2/V4 silent); "
                          "2 = invention (V1+V3, V2+V4 doubled); "
                          "3 = sinfonia faithful (V1,V2,V3; V4 silent); "
+                         "4 = SATB chorale / 4-voice fugue (V1..V4 independent); "
                          "2of3 = sinfonia w/ soprano octave-doubled (V1+V3 sop, V2 alto, V4 bass)")
     ap.add_argument('--tuning', type=float, default=0.0, metavar='CENTS',
                     help="tuning offset from A=440 in cents (default 0; "

@@ -1,0 +1,560 @@
+; ============================================================
+; PLAY.MAC -- Reassembled source for PLAY.COM
+; Source binary: d:/VisualStudio/MUSIC/music.unpacked/0/PLAY.COM
+; Size: 1408 bytes (0580H), load address 100H
+; Reassembles to byte-identical PLAY.COM with M80/L80.
+;
+; Z80-specific opcode census (proves Z80, not 8080):
+;     11  DD prefix (IX register operations)                e.g. DD 2A 5C 05  @ 00198H
+;      7  JR NZ (relative)                                  e.g. 20 09        @ 00133H
+;      6  JR Z (relative)                                   e.g. 28 77        @ 00112H
+;      6  CB prefix (BIT/SET/RES/RR/RL/SLA/SRA/SRL)         e.g. CB 18        @ 00584H
+;      5  ED prefix (LD (nn),rr / SBC HL,rr / etc.)         e.g. ED 5B 06 00  @ 0014FH
+;      4  JR (unconditional relative jump)                  e.g. 18 F5        @ 0018EH
+;      3  JR NC (relative)                                  e.g. 30 2A        @ 00159H
+;      1  DJNZ (decrement-and-jump-relative)                e.g. 10 F9        @ 00170H
+;      1  JR C (relative)                                   e.g. 38 0E        @ 002B8H
+;
+; Build:
+;   M80 =PLAY.MAC
+;   L80 PLAY,PLAY/N/E         ; produces PLAY.COM
+; ============================================================
+
+	.Z80
+	ASEG		; absolute segment -- emit code at literal addresses
+			; (without this, M80 defaults to relocatable mode and L80
+			;  decides placement, breaking the hardcoded self-modifying-
+			;  code addresses in the inner loop.)
+
+; --- CP/M zero-page externals ---
+WBOOT	EQU	0000H   	; warm boot vector
+BDOS	EQU	0005H   	; BDOS entry
+BDOSVC	EQU	0006H   	; address word at BDOS+1 (top of TPA)
+FCB	EQU	005CH   	; default FCB
+FCB1	EQU	005DH   	; first byte of filename in default FCB
+DMA	EQU	0080H   	; default DMA buffer
+
+; --- Self-modifying-code patch points (operands inside INRLP) ---
+TMPIMM	EQU	05DBH   	; B-reload immediate inside LD B,n at OUTITR
+V1STIM	EQU	05E0H   	; Part 1 step immediate (LD DE,nn operand)
+V1PGIM	EQU	05E8H   	; Part 1 wavetable page immediate (LD H,n operand)
+V2STIM	EQU	05EEH   	; Part 2 step immediate
+V2PGIM	EQU	05F6H   	; Part 2 wavetable page immediate
+V3STIM	EQU	05FEH   	; Part 3 step immediate
+V3PGIM	EQU	0606H   	; Part 3 wavetable page immediate
+V4STIM	EQU	060CH   	; Part 4 step immediate
+V4PGIM	EQU	0614H   	; Part 4 wavetable page immediate
+
+	ORG	100H
+
+	JP MAIN                     	; 0100: C3 03 01
+
+MAIN:
+	LD DE,MBANR                 	; 0103: 11 F0 02
+	CALL PRMSG                  	; 0106: CD 67 02
+	LD DE,FCBVOI                	; 0109: 11 D1 02
+	LD C,15                     	; 010C: 0E 0F
+	CALL BDOS                   	; 010E: CD 05 00
+	INC A                       	; 0111: 3C
+	JR Z,ERRVOI                 	; 0112: 28 77
+	LD HL,(BFBAS)               	; 0114: 2A 5E 05
+	INC H                       	; 0117: 24
+	LD L,0                      	; 0118: 2E 00
+	LD A,81H                    	; 011A: 3E 81
+	SUB H                       	; 011C: 94
+	LD (VOFFS),A                	; 011D: 32 5B 05
+	CALL LDFILE                 	; 0120: CD 86 02
+	LD (SADDR),HL               	; 0123: 22 5C 05
+	LD DE,DMA                   	; 0126: 11 80 00
+	LD C,1AH                    	; 0129: 0E 1A
+	CALL BDOS                   	; 012B: CD 05 00
+	LD A,(FCB1)                 	; 012E: 3A 5D 00
+	CP 20H                      	; 0131: FE 20
+	JR NZ,OPNSNG                	; 0133: 20 09
+
+ASKSNG:
+	LD DE,MSONG                 	; 0135: 11 42 03
+	CALL PRMSG                  	; 0138: CD 67 02
+	CALL PCBUF                  	; 013B: CD 79 02
+
+OPNSNG:
+	LD DE,FCB                   	; 013E: 11 5C 00
+	LD C,15                     	; 0141: 0E 0F
+	CALL BDOS                   	; 0143: CD 05 00
+	INC A                       	; 0146: 3C
+	JR Z,ERRNFD                 	; 0147: 28 47
+	LD HL,(SADDR)               	; 0149: 2A 5C 05
+	CALL LDFILE                 	; 014C: CD 86 02
+	LD DE,(BDOSVC)              	; 014F: ED 5B 06 00
+	AND A                       	; 0153: A7
+	SBC HL,DE                   	; 0154: ED 52
+	LD DE,MSTLNG                	; 0156: 11 17 05
+	JR NC,EXITMS                	; 0159: 30 2A
+
+ASKPLP:
+	LD DE,MCHGPM                	; 015B: 11 6E 03
+	CALL ASKYN                  	; 015E: CD 9B 02
+	CALL Z,PCHANG               	; 0161: CC 98 01
+	LD DE,MREPQ                 	; 0164: 11 9E 03
+	CALL PRDEC                  	; 0167: CD AB 02
+	LD B,A                      	; 016A: 47
+
+REPLP:
+	PUSH BC                     	; 016B: C5
+	CALL PLSNG                  	; 016C: CD 62 05
+	POP BC                      	; 016F: C1
+	DJNZ REPLP                  	; 0170: 10 F9
+	LD DE,MAGAIN                	; 0172: 11 4E 03
+	CALL ASKYN                  	; 0175: CD 9B 02
+	JR Z,ASKPLP                 	; 0178: 28 E1
+	LD DE,MNEWS                 	; 017A: 11 63 03
+	CALL ASKYN                  	; 017D: CD 9B 02
+	JR Z,ASKSNG                 	; 0180: 28 B3
+	LD DE,MBYE                  	; 0182: 11 4B 05
+
+EXITMS:
+	CALL PRMSG                  	; 0185: CD 67 02
+	JP WBOOT                    	; 0188: C3 00 00
+
+ERRVOI:
+	LD DE,MCLDVO                	; 018B: 11 37 05
+	JR EXITMS                   	; 018E: 18 F5
+
+ERRNFD:
+	LD DE,MFNF                  	; 0190: 11 06 05
+	CALL PRMSG                  	; 0193: CD 67 02
+	JR ASKSNG                   	; 0196: 18 9D
+
+PCHANG:
+	LD IX,(SADDR)               	; 0198: DD 2A 5C 05
+	LD DE,0405H                 	; 019C: 11 05 04
+	LD A,(IX+10)                	; 019F: DD 7E 0A
+	AND 7FH                     	; 01A2: E6 7F
+	CALL PDTBYT                 	; 01A4: CD 2E 02
+	LD DE,MPV2                  	; 01A7: 11 21 04
+	LD A,(IX+11)                	; 01AA: DD 7E 0B
+	AND 7FH                     	; 01AD: E6 7F
+	CALL PDTBYT                 	; 01AF: CD 2E 02
+	LD DE,MPV3                  	; 01B2: 11 3D 04
+	LD A,(IX+12)                	; 01B5: DD 7E 0C
+	AND 7FH                     	; 01B8: E6 7F
+	CALL PDTBYT                 	; 01BA: CD 2E 02
+	LD DE,MPV4                  	; 01BD: 11 59 04
+	LD A,(IX+13)                	; 01C0: DD 7E 0D
+	AND 7FH                     	; 01C3: E6 7F
+	CALL PDTBYT                 	; 01C5: CD 2E 02
+	LD DE,MCHP1                 	; 01C8: 11 B6 03
+	CALL ASKYN                  	; 01CB: CD 9B 02
+	JR NZ,L01DB                 	; 01CE: 20 0B
+	LD DE,MNV1                  	; 01D0: 11 75 04
+	CALL PRDEC                  	; 01D3: CD AB 02
+	OR DMA                      	; 01D6: F6 80
+	LD (IX+10),A                	; 01D8: DD 77 0A
+
+L01DB:
+	LD DE,MCHP2                 	; 01DB: 11 C6 03
+	CALL ASKYN                  	; 01DE: CD 9B 02
+	JR NZ,L01EE                 	; 01E1: 20 0B
+	LD DE,MNV2                  	; 01E3: 11 8D 04
+	CALL PRDEC                  	; 01E6: CD AB 02
+	OR DMA                      	; 01E9: F6 80
+	LD (IX+11),A                	; 01EB: DD 77 0B
+
+L01EE:
+	LD DE,MCHP3                 	; 01EE: 11 D6 03
+	CALL ASKYN                  	; 01F1: CD 9B 02
+	JR NZ,L0201                 	; 01F4: 20 0B
+	LD DE,MNV3                  	; 01F6: 11 A5 04
+	CALL PRDEC                  	; 01F9: CD AB 02
+	OR DMA                      	; 01FC: F6 80
+	LD (IX+12),A                	; 01FE: DD 77 0C
+
+L0201:
+	LD DE,MCHP4                 	; 0201: 11 E6 03
+	CALL ASKYN                  	; 0204: CD 9B 02
+	JR NZ,L0214                 	; 0207: 20 0B
+	LD DE,MNV4                  	; 0209: 11 BD 04
+	CALL PRDEC                  	; 020C: CD AB 02
+	OR DMA                      	; 020F: F6 80
+	LD (IX+13),A                	; 0211: DD 77 0D
+
+L0214:
+	LD DE,MPRTMP                	; 0214: 11 D5 04
+	LD A,(IX+14)                	; 0217: DD 7E 0E
+	CALL PDTBYT                 	; 021A: CD 2E 02
+	LD DE,MCHTMP                	; 021D: 11 F6 03
+	CALL ASKYN                  	; 0220: CD 9B 02
+	RET nz                      	; 0223: C0
+	LD DE,MNTMP                 	; 0224: 11 F0 04
+	CALL PRDEC                  	; 0227: CD AB 02
+	LD (IX+14),A                	; 022A: DD 77 0E
+	RET                         	; 022D: C9
+
+PDTBYT:
+	CALL PRMSG                  	; 022E: CD 67 02
+	LD HL,TDIG                  	; 0231: 21 CD 02
+	LD (HL),0                   	; 0234: 36 00
+	LD HL,DIV10                 	; 0236: 21 CE 02
+	LD C,2                      	; 0239: 0E 02
+	LD E,(HL)                   	; 023B: 5E
+
+L023C:
+	LD D,0                      	; 023C: 16 00
+
+L023E:
+	INC D                       	; 023E: 14
+	SUB E                       	; 023F: 93
+	JR NC,L023E                 	; 0240: 30 FC
+	ADD A,E                     	; 0242: 83
+	LD B,A                      	; 0243: 47
+	DEC D                       	; 0244: 15
+	JR NZ,L024D                 	; 0245: 20 06
+	LD A,(TDIG)                 	; 0247: 3A CD 02
+	AND A                       	; 024A: A7
+	JR Z,L0257                  	; 024B: 28 0A
+
+L024D:
+	LD A,D                      	; 024D: 7A
+	ADD A,30H                   	; 024E: C6 30
+	LD (TDIG),A                 	; 0250: 32 CD 02
+	LD E,A                      	; 0253: 5F
+	CALL BDOS                   	; 0254: CD 05 00
+
+L0257:
+	INC HL                      	; 0257: 23
+	LD A,(HL)                   	; 0258: 7E
+	AND A                       	; 0259: A7
+	LD E,A                      	; 025A: 5F
+	LD A,B                      	; 025B: 78
+	JR NZ,L023C                 	; 025C: 20 DE
+	ADD A,30H                   	; 025E: C6 30
+	LD E,A                      	; 0260: 5F
+	CALL BDOS                   	; 0261: CD 05 00
+
+PDEMSG:
+	LD DE,0514H                 	; 0264: 11 14 05
+
+PRMSG:
+	LD C,9                      	; 0267: 0E 09
+	JP BDOS                     	; 0269: C3 05 00
+
+RDCBUF:
+	LD HL,DMA                   	; 026C: 21 80 00
+	LD (HL),L                   	; 026F: 75
+	LD C,10                     	; 0270: 0E 0A
+	EX DE,HL                    	; 0272: EB
+	CALL BDOS                   	; 0273: CD 05 00
+	EX DE,HL                    	; 0276: EB
+	JR PDEMSG                   	; 0277: 18 EB
+
+PCBUF:
+	CALL RDCBUF                 	; 0279: CD 6C 02
+	INC HL                      	; 027C: 23
+	INC HL                      	; 027D: 23
+	LD DE,FCB                   	; 027E: 11 5C 00
+	LD C,86H                    	; 0281: 0E 86
+	JP BDOS                     	; 0283: C3 05 00
+
+LDFILE:
+	PUSH DE                     	; 0286: D5
+	EX DE,HL                    	; 0287: EB
+	LD C,1AH                    	; 0288: 0E 1A
+	CALL BDOS                   	; 028A: CD 05 00
+	LD HL,DMA                   	; 028D: 21 80 00
+	ADD HL,DE                   	; 0290: 19
+	POP DE                      	; 0291: D1
+	LD C,14H                    	; 0292: 0E 14
+	CALL BDOS                   	; 0294: CD 05 00
+	AND A                       	; 0297: A7
+	JR Z,LDFILE                 	; 0298: 28 EC
+	RET                         	; 029A: C9
+
+ASKYN:
+	CALL PRMSG                  	; 029B: CD 67 02
+	LD C,1                      	; 029E: 0E 01
+	CALL BDOS                   	; 02A0: CD 05 00
+	CALL PDEMSG                 	; 02A3: CD 64 02
+	AND 5FH                     	; 02A6: E6 5F
+	CP 59H                      	; 02A8: FE 59
+	RET                         	; 02AA: C9
+
+PRDEC:
+	CALL PRMSG                  	; 02AB: CD 67 02
+	CALL RDCBUF                 	; 02AE: CD 6C 02
+	INC HL                      	; 02B1: 23
+	INC HL                      	; 02B2: 23
+	SUB A                       	; 02B3: 97
+
+L02B4:
+	LD C,A                      	; 02B4: 4F
+	LD A,(HL)                   	; 02B5: 7E
+	SUB 30H                     	; 02B6: D6 30
+	JR C,L02C8                  	; 02B8: 38 0E
+	CP 3AH                      	; 02BA: FE 3A
+	JR NC,L02C8                 	; 02BC: 30 0A
+	LD B,A                      	; 02BE: 47
+	LD A,C                      	; 02BF: 79
+	ADD A,A                     	; 02C0: 87
+	ADD A,A                     	; 02C1: 87
+	ADD A,C                     	; 02C2: 81
+	ADD A,A                     	; 02C3: 87
+	ADD A,B                     	; 02C4: 80
+	INC HL                      	; 02C5: 23
+	JR L02B4                    	; 02C6: 18 EC
+
+L02C8:
+	LD A,C                      	; 02C8: 79
+	AND A                       	; 02C9: A7
+	RET nz                      	; 02CA: C0
+	INC A                       	; 02CB: 3C
+	RET                         	; 02CC: C9
+
+TDIG:
+; --- init: scratch / divisor for decimal print ---
+	DB	00H                                                         	; 02CD: .
+
+DIV10:
+	DB	64H, 0AH, 00H                                               	; 02CE: d..
+
+FCBVOI:
+; --- FCB for VOICES.MUS ---
+	DB	00H, 56H, 4FH, 49H, 43H, 45H, 53H, 20H, 20H, 4DH, 55H, 53H, 00H, 00H, 00H, 3EH	; 02D1: .VOICES  MUS...>
+	DB	09H, 18H, 36H, 0CDH, 19H, 20H, 3AH, 3CH, 3FH, 0C6H, 02H, 0BAH, 0C4H, 0ECH	; 02E1: ..6.. :<?.....
+; --- $-terminated message strings ---
+	DB	23H                                                         	; 02EF: #
+
+MBANR:
+	DB	4DH, 75H, 73H, 69H, 63H, 20H, 50H, 6CH, 61H, 79H, 65H, 72H, 2CH, 20H, 76H, 65H	; 02F0: Music Player, ve
+	DB	72H, 73H, 69H, 6FH, 6EH, 20H, 30H, 30H, 2EH, 30H, 32H, 0DH, 0AH, 0AH, 57H, 65H	; 0300: rsion 00.02...We
+	DB	6CH, 63H, 6FH, 6DH, 65H, 20H, 74H, 6FH, 20H, 74H, 68H, 65H, 20H, 57H, 6FH, 6EH	; 0310: lcome to the Won
+	DB	64H, 65H, 72H, 66H, 75H, 6CH, 20H, 57H, 6FH, 72H, 6CH, 64H, 20H, 6FH, 66H, 20H	; 0320: derful World of 
+	DB	43H, 4FH, 4DH, 50H, 55H, 54H, 45H, 52H, 20H, 4DH, 55H, 53H, 49H, 43H, 0DH, 0AH	; 0330: COMPUTER MUSIC..
+	DB	0AH, 24H                                                    	; 0340: .$
+
+MSONG:
+	DB	53H, 6FH, 6EH, 67H, 20H, 66H, 69H, 6CH, 65H, 3FH, 20H, 24H  	; 0342: Song file? $
+
+MAGAIN:
+	DB	50H, 6CH, 61H, 79H, 20H, 69H, 74H, 20H, 61H, 67H, 61H, 69H, 6EH, 2CH, 20H, 53H	; 034E: Play it again, S
+	DB	61H, 6DH, 3FH, 20H, 24H                                     	; 035E: am? $
+
+MNEWS:
+	DB	4EH, 65H, 77H, 20H, 73H, 6FH, 6EH, 67H, 3FH, 20H, 24H       	; 0363: New song? $
+
+MCHGPM:
+	DB	44H, 6FH, 20H, 79H, 6FH, 75H, 20H, 77H, 61H, 6EH, 74H, 20H, 74H, 6FH, 20H, 63H	; 036E: Do you want to c
+	DB	68H, 61H, 6EH, 67H, 65H, 20H, 74H, 68H, 65H, 20H, 73H, 74H, 61H, 72H, 74H, 69H	; 037E: hange the starti
+	DB	6EH, 67H, 20H, 70H, 61H, 72H, 61H, 6DH, 65H, 74H, 65H, 72H, 73H, 3FH, 20H, 24H	; 038E: ng parameters? $
+
+MREPQ:
+	DB	48H, 6FH, 77H, 20H, 6DH, 61H, 6EH, 79H, 20H, 72H, 65H, 70H, 65H, 74H, 69H, 74H	; 039E: How many repetit
+	DB	69H, 6FH, 6EH, 73H, 20H, 3FH, 20H, 24H                      	; 03AE: ions ? $
+
+MCHP1:
+	DB	43H, 68H, 61H, 6EH, 67H, 65H, 20H, 50H, 61H, 72H, 74H, 20H, 31H, 3FH, 20H, 24H	; 03B6: Change Part 1? $
+
+MCHP2:
+	DB	43H, 68H, 61H, 6EH, 67H, 65H, 20H, 50H, 61H, 72H, 74H, 20H, 32H, 3FH, 20H, 24H	; 03C6: Change Part 2? $
+
+MCHP3:
+	DB	43H, 68H, 61H, 6EH, 67H, 65H, 20H, 50H, 61H, 72H, 74H, 20H, 33H, 3FH, 20H, 24H	; 03D6: Change Part 3? $
+
+MCHP4:
+	DB	43H, 68H, 61H, 6EH, 67H, 65H, 20H, 50H, 61H, 72H, 74H, 20H, 34H, 3FH, 20H, 24H	; 03E6: Change Part 4? $
+
+MCHTMP:
+	DB	43H, 68H, 61H, 6EH, 67H, 65H, 20H, 74H, 65H, 6DH, 70H, 6FH, 3FH, 20H, 24H, 50H	; 03F6: Change tempo? $P
+
+MPV1:
+	DB	72H, 65H, 73H, 65H, 6EH, 74H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 6FH, 66H, 20H	; 0406: resent voice of 
+	DB	50H, 61H, 72H, 74H, 20H, 31H, 20H, 69H, 73H, 20H, 24H       	; 0416: Part 1 is $
+
+MPV2:
+	DB	50H, 72H, 65H, 73H, 65H, 6EH, 74H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 6FH, 66H	; 0421: Present voice of
+	DB	20H, 50H, 61H, 72H, 74H, 20H, 32H, 20H, 69H, 73H, 20H, 24H  	; 0431:  Part 2 is $
+
+MPV3:
+	DB	50H, 72H, 65H, 73H, 65H, 6EH, 74H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 6FH, 66H	; 043D: Present voice of
+	DB	20H, 50H, 61H, 72H, 74H, 20H, 33H, 20H, 69H, 73H, 20H, 24H  	; 044D:  Part 3 is $
+
+MPV4:
+	DB	50H, 72H, 65H, 73H, 65H, 6EH, 74H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 6FH, 66H	; 0459: Present voice of
+	DB	20H, 50H, 61H, 72H, 74H, 20H, 34H, 20H, 69H, 73H, 20H, 24H  	; 0469:  Part 4 is $
+
+MNV1:
+	DB	4EH, 65H, 77H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 66H, 6FH, 72H, 20H, 50H, 61H	; 0475: New voice for Pa
+	DB	72H, 74H, 20H, 31H, 20H, 3FH, 20H, 24H                      	; 0485: rt 1 ? $
+
+MNV2:
+	DB	4EH, 65H, 77H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 66H, 6FH, 72H, 20H, 50H, 61H	; 048D: New voice for Pa
+	DB	72H, 74H, 20H, 32H, 20H, 3FH, 20H, 24H                      	; 049D: rt 2 ? $
+
+MNV3:
+	DB	4EH, 65H, 77H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 66H, 6FH, 72H, 20H, 50H, 61H	; 04A5: New voice for Pa
+	DB	72H, 74H, 20H, 33H, 20H, 3FH, 20H, 24H                      	; 04B5: rt 3 ? $
+
+MNV4:
+	DB	4EH, 65H, 77H, 20H, 76H, 6FH, 69H, 63H, 65H, 20H, 66H, 6FH, 72H, 20H, 50H, 61H	; 04BD: New voice for Pa
+	DB	72H, 74H, 20H, 34H, 20H, 3FH, 20H, 24H                      	; 04CD: rt 4 ? $
+
+MPRTMP:
+	DB	50H, 72H, 65H, 73H, 65H, 6EH, 74H, 20H, 73H, 74H, 61H, 72H, 74H, 69H, 6EH, 67H	; 04D5: Present starting
+	DB	20H, 74H, 65H, 6DH, 70H, 6FH, 20H, 69H, 73H, 20H, 24H       	; 04E5:  tempo is $
+
+MNTMP:
+	DB	4EH, 65H, 77H, 20H, 73H, 74H, 61H, 72H, 74H, 69H, 6EH, 67H, 20H, 74H, 65H, 6DH	; 04F0: New starting tem
+	DB	70H, 6FH, 20H, 3FH, 20H, 24H                                	; 0500: po ? $
+
+MFNF:
+	DB	46H, 69H, 6CH, 65H, 20H, 6EH, 6FH, 74H, 20H, 66H, 6FH, 75H, 6EH, 64H, 0DH, 0AH	; 0506: File not found..
+	DB	24H                                                         	; 0516: $
+
+MSTLNG:
+	DB	53H, 6FH, 6EH, 67H, 20H, 66H, 69H, 6CH, 65H, 20H, 69H, 73H, 20H, 74H, 6FH, 6FH	; 0517: Song file is too
+	DB	20H, 6CH, 6FH, 6EH, 67H, 20H, 74H, 6FH, 20H, 70H, 6CH, 61H, 79H, 0DH, 0AH, 24H	; 0527:  long to play..$
+
+MCLDVO:
+	DB	43H, 61H, 6EH, 27H, 74H, 20H, 6CH, 6FH, 61H, 64H, 20H, 76H, 6FH, 69H, 63H, 65H	; 0537: Can't load voice
+	DB	73H, 0DH, 0AH, 24H                                          	; 0547: s..$
+
+MBYE:
+	DB	0AH, 27H, 42H, 79H, 65H, 20H, 66H, 6FH, 72H, 20H, 6EH, 6FH, 77H, 0DH, 0AH, 24H	; 054B: .'Bye for now..$
+
+VOFFS:
+; --- static variables (VOFFS, SADDR, BFBAS, SVDSP) ---
+	DB	17H                                                         	; 055B: .
+
+SADDR:
+	DB	30H, 0FBH                                                   	; 055C: 0.
+
+BFBAS:
+	DB	23H, 06H                                                    	; 055E: #.
+
+SVDSP:
+	DB	0E1H, 18H                                                   	; 0560: ..
+
+PLSNG:
+	LD (SVDSP),SP               	; 0562: ED 73 60 05
+	LD A,(VOFFS)                	; 0566: 3A 5B 05
+	LD (05B0H),A                	; 0569: 32 B0 05
+	LD (05B6H),A                	; 056C: 32 B6 05
+	LD (05BDH),A                	; 056F: 32 BD 05
+	LD (05C3H),A                	; 0572: 32 C3 05
+	LD SP,(SADDR)               	; 0575: ED 7B 5C 05
+
+NXCMD:
+	POP BC                      	; 0579: C1
+	XOR A                       	; 057A: AF
+	OR C                        	; 057B: B1
+	JP NZ,DSPCMD                	; 057C: C2 84 05
+	LD SP,(SVDSP)               	; 057F: ED 7B 60 05
+	RET                         	; 0583: C9
+
+DSPCMD:
+	RR B                        	; 0584: CB 18
+	JP NC,L058D                 	; 0586: D2 8D 05
+	POP HL                      	; 0589: E1
+	LD (V1STIM),HL              	; 058A: 22 E0 05
+
+L058D:
+	RR B                        	; 058D: CB 18
+	JP NC,L0596                 	; 058F: D2 96 05
+	POP HL                      	; 0592: E1
+	LD (V2STIM),HL              	; 0593: 22 EE 05
+
+L0596:
+	RR B                        	; 0596: CB 18
+	JP NC,L059F                 	; 0598: D2 9F 05
+	POP HL                      	; 059B: E1
+	LD (V3STIM),HL              	; 059C: 22 FE 05
+
+L059F:
+	RR B                        	; 059F: CB 18
+	JP NC,L05A8                 	; 05A1: D2 A8 05
+	POP HL                      	; 05A4: E1
+	LD (V4STIM),HL              	; 05A5: 22 0C 06
+
+L05A8:
+	RR B                        	; 05A8: CB 18
+	JP NC,L05C7                 	; 05AA: D2 C7 05
+	POP HL                      	; 05AD: E1
+	LD A,L                      	; 05AE: 7D
+	SUB 0                       	; 05AF: D6 00
+	LD (V1PGIM),A               	; 05B1: 32 E8 05
+	LD A,H                      	; 05B4: 7C
+	SUB 0                       	; 05B5: D6 00
+	LD (V2PGIM),A               	; 05B7: 32 F6 05
+	POP HL                      	; 05BA: E1
+	LD A,L                      	; 05BB: 7D
+	SUB 0                       	; 05BC: D6 00
+	LD (V3PGIM),A               	; 05BE: 32 06 06
+	LD A,H                      	; 05C1: 7C
+	SUB 0                       	; 05C2: D6 00
+	LD (V4PGIM),A               	; 05C4: 32 14 06
+
+L05C7:
+	RR B                        	; 05C7: CB 18
+	JP NC,L05D1                 	; 05C9: D2 D1 05
+	POP HL                      	; 05CC: E1
+	LD A,L                      	; 05CD: 7D
+	LD (TMPIMM),A               	; 05CE: 32 DB 05
+
+L05D1:
+	JP OUTITR                   	; 05D1: C3 DA 05
+
+L05D4:
+	NOP                         	; 05D4: 00
+	LD A,0                      	; 05D5: 3E 00
+	JP INRLP                    	; 05D7: C3 DC 05
+
+OUTITR:
+	LD B,0                      	; 05DA: 06 00
+
+INRLP:
+	LD HL,0                     	; 05DC: 21 00 00
+	LD DE,0                     	; 05DF: 11 00 00
+	ADD HL,DE                   	; 05E2: 19
+	LD (05DDH),HL               	; 05E3: 22 DD 05
+	LD L,H                      	; 05E6: 6C
+	LD H,0                      	; 05E7: 26 00
+	LD A,(HL)                   	; 05E9: 7E
+	LD HL,0                     	; 05EA: 21 00 00
+	LD DE,0                     	; 05ED: 11 00 00
+	ADD HL,DE                   	; 05F0: 19
+	LD (05EBH),HL               	; 05F1: 22 EB 05
+	LD L,H                      	; 05F4: 6C
+	LD H,0                      	; 05F5: 26 00
+	ADD A,(HL)                  	; 05F7: 86
+	OUT (19H),A                 	; 05F8: D3 19
+	LD HL,0                     	; 05FA: 21 00 00
+	LD DE,0                     	; 05FD: 11 00 00
+	ADD HL,DE                   	; 0600: 19
+	LD (05FBH),HL               	; 0601: 22 FB 05
+	LD L,H                      	; 0604: 6C
+	LD H,0                      	; 0605: 26 00
+	LD A,(HL)                   	; 0607: 7E
+	LD HL,0                     	; 0608: 21 00 00
+	LD DE,0                     	; 060B: 11 00 00
+	ADD HL,DE                   	; 060E: 19
+	LD (0609H),HL               	; 060F: 22 09 06
+	LD L,H                      	; 0612: 6C
+	LD H,0                      	; 0613: 26 00
+	ADD A,(HL)                  	; 0615: 86
+	OUT (1BH),A                 	; 0616: D3 1B
+	DEC B                       	; 0618: 05
+	JP NZ,L05D4                 	; 0619: C2 D4 05
+	DEC C                       	; 061C: 0D
+	JP NZ,OUTITR                	; 061D: C2 DA 05
+	JP NXCMD                    	; 0620: C3 79 05
+
+DEAD:
+; --- duplicated/unreachable block ---
+	DB	05H, 0E1H, 22H, 0CH, 06H, 0CBH, 18H, 0D2H, 0C7H, 05H, 0E1H, 7DH, 0D6H, 00H, 32H, 0E8H	; 0623: .."........}..2.
+	DB	05H, 7CH, 0D6H, 00H, 32H, 0F6H, 05H, 0E1H, 7DH, 0D6H, 00H, 32H, 06H, 06H, 7CH, 0D6H	; 0633: .|..2...}..2..|.
+	DB	00H, 32H, 14H, 06H, 0CBH, 18H, 0D2H, 0D1H, 05H, 0E1H, 7DH, 32H, 0DBH, 05H, 0C3H, 0DAH	; 0643: .2........}2....
+	DB	05H, 00H, 3EH, 00H, 0C3H, 0DCH, 05H, 06H, 00H, 21H, 00H, 00H, 11H, 00H, 00H, 19H	; 0653: ..>......!......
+	DB	22H, 0DDH, 05H, 6CH, 26H, 00H, 7EH, 21H, 00H, 00H, 11H, 00H, 00H, 19H, 22H, 0EBH	; 0663: "..l&.~!......".
+	DB	05H, 6CH, 26H, 00H, 86H, 0D3H, 19H, 21H, 00H, 00H, 11H, 00H, 00H	; 0673: .l&....!.....
+
+	END	100H		; entry point for the loaded COM file
+

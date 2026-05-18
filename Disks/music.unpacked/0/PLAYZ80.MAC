@@ -1,0 +1,770 @@
+	TITLE	PLAYZ80 -- Z80 Music Player for CP/M 2.2
+
+; ============================================================
+; PLAYZ80.MAC -- Z80 port of PLAY.COM (CDOS) for CP/M 2.2
+;
+; Strategy: keep the mix/play loop (memory 0562H .. 0622H)
+; byte-for-byte identical to the CDOS PLAY.COM so audio sample-rate
+; timing is exactly preserved.  Replace everything outside that
+; range with CP/M 2.2-compatible logic, patterned after the working
+; 8080 port:
+;
+;   * Compile-time VOICES_LOAD / VOFFSET (no runtime BFBAS math)
+;   * VOFFS and SADDR pre-initialized in the binary
+;   * Private stack at MAIN entry
+;   * In-program filename parser (replaces CDOS BDOS function 86h)
+;   * Default FCB at 005Ch with explicit FCB+12..35 zeroing pre-OPEN
+;   * JP WBOOT exit (no RET to CCP)
+;
+; Build:
+;   M80 =PLAYZ80.MAC
+;   L80 PLAYZ80,PLAYZ80/N/E
+; ============================================================
+
+	.Z80
+	ASEG
+
+;-- CP/M 2.2 zero page ----------------------------------------------
+WBOOT	EQU	0000H
+BDOS	EQU	0005H
+DFCB	EQU	005CH		; default FCB (CCP-prepared)
+DFCB1	EQU	005DH		; first char of filename in default FCB
+DMA	EQU	0080H
+
+;-- BDOS function codes ---------------------------------------------
+PSTR	EQU	9
+CINP	EQU	1
+COUT	EQU	2
+RDLN	EQU	10
+OPEN	EQU	15
+RDSEQ	EQU	20
+SETDMA	EQU	26
+
+;-- D+7A I/O ports --------------------------------------------------
+AN1	EQU	19H		; analog out channel 1 (Parts 1+2)
+AN3	EQU	1BH		; analog out channel 3 (Parts 3+4)
+
+;-- Compile-time layout ---------------------------------------------
+VLOAD	EQU	0700H		; VOICES.MUS load addr; pinned by SUB-n
+				;  in the dispatcher (page bytes must be
+				;  07h..0Ch for 6 wavetables)
+VOFF	EQU	81H - HIGH VLOAD	; = 7Ah
+SBUF	EQU	VLOAD + 600H	; = 0D00H (after 6*256 voice tables)
+LBUFM	EQU	32
+
+;-- ASCII -----------------------------------------------------------
+CR	EQU	0DH
+LF	EQU	0AH
+APOS	EQU	27H
+
+;-- Mix-loop SMC patch points (must be these exact addresses; the
+;   CDOS mix-loop bytes at 0562h..0622h reference them directly) ---
+TMPIMM	EQU	05DBH		; B-reload (LD B,n at OUTITR)
+V1STIM	EQU	05E0H		; Part 1 step (LD DE,nn operand)
+V1PGIM	EQU	05E8H		; Part 1 wavetable page (LD H,n operand)
+V2STIM	EQU	05EEH
+V2PGIM	EQU	05F6H
+V3STIM	EQU	05FEH
+V3PGIM	EQU	0606H
+V4STIM	EQU	060CH
+V4PGIM	EQU	0614H
+
+;-- Static vars referenced by mix loop (must be at fixed addrs) -----
+VOFFS	EQU	055BH
+SADDR	EQU	055CH
+SVDSP	EQU	0560H
+
+;-- Mix-loop entry --------------------------------------------------
+PLSNG	EQU	0562H
+
+	ORG	100H
+
+	JP	MAIN
+
+;==================================================================
+; MAIN -- entry point
+;==================================================================
+MAIN:
+	LD	SP,STKTOP		; private stack
+	CALL	CHKQ			; scan command tail for /Q switch
+	LD	DE,MBANR
+	CALL	PRMSG
+	;
+	; Open VOICES.MUS via the pre-initialized private FCBV.
+	LD	DE,FCBV
+	LD	C,OPEN
+	CALL	BDOS
+	INC	A
+	JP	Z,ERRVOI
+	;
+	; Load VOICES.MUS to the compile-time fixed address.
+	; Reload DE explicitly: BDOS clobbered it during OPEN.
+	LD	HL,VLOAD
+	LD	DE,FCBV
+	CALL	LDFILE
+	;
+	; SADDR is pre-initialized to SBUF (0D00h) in the static-var
+	; block; nothing to compute at runtime.  Reset DMA to 0080h.
+	LD	DE,DMA
+	LD	C,SETDMA
+	CALL	BDOS
+	;
+	; If a filename was passed on the command line, the CCP has
+	; already parsed it into the default FCB at 005Ch.
+	LD	A,(DFCB1)
+	CP	' '
+	JR	NZ,OPNSNG
+
+ASKSNG:
+	LD	DE,MSONG
+	CALL	PRMSG
+	CALL	PCBUF		; fills DFCB by parsing typed line
+
+OPNSNG:
+	; Zero default-FCB+12..35 before OPEN.  CP/M 2.2 BDOS doesn't
+	; zero the CR byte (FCB+32); on song-replay loops the FCB also
+	; carries stale state from the previous OPEN.
+	LD	HL,DFCB+12
+	LD	B,24
+	XOR	A
+ZFCBL:
+	LD	(HL),A
+	INC	HL
+	DJNZ	ZFCBL
+	;
+	LD	DE,DFCB
+	LD	C,OPEN
+	CALL	BDOS
+	INC	A
+	JR	Z,ERRNFD
+	;
+	; Load the song into SBUF (= SADDR).
+	; Reload DE explicitly: BDOS clobbered it during OPEN.
+	LD	HL,(SADDR)
+	LD	DE,DFCB
+	CALL	LDFILE
+
+ASKPLP:
+	LD	A,(QFLAG)
+	OR	A
+	JR	NZ,QPLAY1		; /q -> skip params, default 1 rep
+	;
+	LD	DE,MCHGPM
+	CALL	ASKYN
+	CALL	Z,PCHANG
+	;
+	LD	DE,MREPQ
+	CALL	PRDEC
+	OR	A
+	JR	NZ,GOTREP
+	LD	A,1		; default 1 repetition if user typed nothing
+	JR	GOTREP
+QPLAY1:
+	LD	A,1		; /q mode: always 1 rep
+GOTREP:
+	LD	B,A
+REPLP:
+	PUSH	BC
+	CALL	PLSNG		; <<-- enter the untouched mix loop
+	POP	BC
+	DJNZ	REPLP
+	;
+	LD	A,(QFLAG)
+	OR	A
+	JR	NZ,QEXIT		; /q -> straight to BYE + warm boot
+	;
+	LD	DE,MAGAIN
+	CALL	ASKYN
+	JR	Z,ASKPLP
+	LD	DE,MNEWS
+	CALL	ASKYN
+	JR	Z,ASKSNG
+QEXIT:
+	LD	DE,MBYE
+	CALL	PRMSG
+	JP	WBOOT
+
+;==================================================================
+; ERRVOI -- couldn't load voices, print msg and warm-boot
+;==================================================================
+ERRVOI:
+	LD	DE,MCLDVO
+	CALL	PRMSG
+	JP	WBOOT
+
+;==================================================================
+; ERRNFD -- song file not found; print msg and prompt again
+;==================================================================
+ERRNFD:
+	LD	DE,MFNF
+	CALL	PRMSG
+	JR	ASKSNG
+
+;==================================================================
+; PRMSG -- print $-terminated string at DE (tail-call to BDOS)
+;==================================================================
+PRMSG:
+	LD	C,PSTR
+	JP	BDOS
+
+;==================================================================
+; RDCBUF -- read a line into LBUF, then print CR/LF
+;==================================================================
+RDCBUF:
+	LD	A,LBUFM
+	LD	(LBUF),A	; max length
+	LD	DE,LBUF
+	LD	C,RDLN
+	CALL	BDOS
+	LD	DE,MCRLF
+	JP	PRMSG		; tail-call
+
+;==================================================================
+; PCBUF -- read filename from console, parse into default FCB
+;==================================================================
+PCBUF:
+	CALL	RDCBUF
+	JP	PARSE
+
+;==================================================================
+; LDFILE -- load file via FCB in DE into memory at HL.
+;   Each iteration: SET DMA to current HL, READ SEQUENTIAL,
+;   advance HL by 128.  Returns when BDOS returns A != 0 (EOF).
+;
+;   CP/M 2.2 BDOS does NOT preserve DE or HL across SETDMA or
+;   RDSEQ.  (The original CDOS BDOS apparently did, which is why
+;   the byte-for-byte CDOS LDFILE worked there but loads only the
+;   first record correctly here -- after that, both registers are
+;   garbage and subsequent reads target arbitrary memory and use
+;   a junk FCB pointer.)  We save HL and DE on the program stack
+;   around every BDOS call.
+;==================================================================
+LDFILE:
+LDFLP:
+	PUSH	DE		; save FCB
+	PUSH	HL		; save load_addr
+	EX	DE,HL		; DE = load_addr (FCB now in HL but unused here)
+	LD	C,SETDMA
+	CALL	BDOS
+	POP	HL		; restore load_addr
+	POP	DE		; restore FCB
+	PUSH	DE		; save FCB again (for use after RDSEQ)
+	PUSH	HL		; save load_addr
+	LD	C,RDSEQ
+	CALL	BDOS
+	POP	HL		; restore load_addr
+	POP	DE		; restore FCB
+	AND	A
+	RET	NZ		; EOF or error -> done
+	LD	BC,80H
+	ADD	HL,BC		; advance load_addr by one record
+	JR	LDFLP
+
+;==================================================================
+; ASKYN -- print prompt at DE; read 1 char with echo; then CRLF;
+;          returns Z if Y/y, NZ otherwise
+;==================================================================
+ASKYN:
+	CALL	PRMSG
+	LD	C,CINP
+	CALL	BDOS
+	PUSH	AF
+	LD	DE,MCRLF
+	CALL	PRMSG
+	POP	AF
+	AND	5FH		; uppercase
+	CP	'Y'
+	RET
+
+;==================================================================
+; PCHANG -- interactive change-parameters UI.
+; Modifies bytes 10..14 of the loaded song (the operands of the
+; song's first "set voices/tempo" command):
+;   song+10..13 = voice bytes for parts 1..4 (format: 80h | idx)
+;   song+14     = tempo byte
+;==================================================================
+PCHANG:
+	LD	HL,(SADDR)
+	LD	BC,10
+	ADD	HL,BC
+	LD	(CURPTR),HL		; CURPTR = song+10 (part 1 voice)
+	LD	A,1
+	LD	(CURPRT),A		; current part number = 1
+
+PCHLP:
+	LD	DE,MCHP_A		; "  Change Part "
+	CALL	PRMSG
+	CALL	PRPRTN
+	LD	DE,MCHP_B		; "? "
+	CALL	PRMSG
+	CALL	ASKYN
+	JR	NZ,PCHSK
+	;
+	; Y -- show present voice and prompt for new
+	LD	DE,MPV_A		; "    Present voice of Part "
+	CALL	PRMSG
+	CALL	PRPRTN
+	LD	DE,MPV_B		; " is "
+	CALL	PRMSG
+	LD	HL,(CURPTR)
+	LD	A,(HL)
+	AND	7FH
+	ADD	A,'0'
+	CALL	PUTCH
+	LD	DE,MCRLF
+	CALL	PRMSG
+	;
+	LD	DE,MNV_A		; "    New voice for Part "
+	CALL	PRMSG
+	CALL	PRPRTN
+	LD	DE,MNV_B		; " ? "
+	CALL	PRDEC
+	OR	80H			; voice byte format: 80h | idx
+	LD	HL,(CURPTR)
+	LD	(HL),A
+
+PCHSK:
+	LD	HL,(CURPTR)
+	INC	HL
+	LD	(CURPTR),HL
+	LD	A,(CURPRT)
+	INC	A
+	LD	(CURPRT),A
+	CP	5
+	JR	NZ,PCHLP
+	;
+	; CURPTR now points at song+14 (tempo byte)
+	LD	DE,MCHTMP		; "  Change tempo? "
+	CALL	PRMSG
+	CALL	ASKYN
+	RET	NZ
+	;
+	LD	DE,MPRTMP		; "    Present starting tempo is "
+	CALL	PRMSG
+	LD	HL,(CURPTR)
+	LD	A,(HL)
+	CALL	PRTBYT
+	LD	DE,MCRLF
+	CALL	PRMSG
+	;
+	LD	DE,MNTMP		; "    New starting tempo ? "
+	CALL	PRDEC
+	LD	HL,(CURPTR)
+	LD	(HL),A
+	RET
+
+;==================================================================
+; PUTCH -- print char in A via BDOS COUT (function 2)
+;==================================================================
+PUTCH:
+	LD	E,A
+	LD	C,COUT
+	JP	BDOS
+
+;==================================================================
+; PRPRTN -- print current part number ('1'..'4') as a digit
+;==================================================================
+PRPRTN:
+	LD	A,(CURPRT)
+	ADD	A,'0'
+	JP	PUTCH
+
+;==================================================================
+; PRTBYT -- print A as decimal (0..255).  Suppresses leading
+; hundreds digit if zero; tens and units always print.
+;==================================================================
+PRTBYT:
+	LD	B,'0'
+PHLP:
+	SUB	100
+	JR	C,PHDN
+	INC	B
+	JR	PHLP
+PHDN:
+	ADD	A,100			; restore underflow
+	PUSH	AF
+	LD	A,B
+	CP	'0'
+	JR	Z,PHSK
+	CALL	PUTCH
+PHSK:
+	POP	AF
+	LD	B,'0'
+PTLP:
+	SUB	10
+	JR	C,PTDN
+	INC	B
+	JR	PTLP
+PTDN:
+	ADD	A,10
+	PUSH	AF
+	LD	A,B
+	CALL	PUTCH
+	POP	AF
+	ADD	A,'0'
+	JP	PUTCH
+
+;==================================================================
+; PRDEC -- print prompt at DE; read decimal byte (0..255)
+;          On entry: DE = prompt.  On exit: A = parsed value (0
+;          for empty input; first non-digit terminates).
+;==================================================================
+PRDEC:
+	CALL	PRMSG
+	CALL	RDCBUF
+	LD	A,(LBUF+1)
+	OR	A
+	RET	Z
+	LD	B,A
+	LD	HL,LBUF+2
+	LD	C,0
+PRLP:
+	LD	A,B
+	OR	A
+	JR	Z,PRDONE
+	LD	A,(HL)
+	SUB	'0'
+	JR	C,PRDONE
+	CP	10
+	JR	NC,PRDONE
+	LD	E,A		; save digit
+	LD	A,C
+	ADD	A,A		; *2
+	LD	C,A
+	ADD	A,A		; *4
+	ADD	A,A		; *8
+	ADD	A,C		; *10
+	ADD	A,E		; +digit
+	LD	C,A
+	INC	HL
+	DEC	B
+	JR	PRLP
+PRDONE:
+	LD	A,C
+	RET
+
+;==================================================================
+; CHKQ -- scan the CP/M command tail at 0080h for "/Q" or "/q".
+; Sets QFLAG = 1 if found, 0 otherwise.  Called once at MAIN entry
+; before anything touches the default DMA buffer.
+;
+; The filename has to come first on the command line; the CCP parses
+; the first token into the default FCB.  /q is recognized anywhere
+; after that in the tail.
+;==================================================================
+CHKQ:
+	XOR	A
+	LD	(QFLAG),A		; default: not quiet
+	LD	A,(DMA)			; A = command-tail length byte
+	OR	A
+	RET	Z			; empty tail
+	LD	B,A			; B = remaining chars
+	LD	HL,DMA+1		; HL = first char of tail
+CHKQ_LP:
+	LD	A,(HL)
+	CP	'/'
+	JR	Z,CHKQ_SLASH
+	INC	HL
+	DJNZ	CHKQ_LP
+	RET				; no '/' found
+CHKQ_SLASH:
+	INC	HL
+	DEC	B
+	RET	Z			; lone '/' at end of tail
+	LD	A,(HL)
+	AND	5FH			; uppercase
+	CP	'Q'
+	RET	NZ			; '/X' where X != Q
+	LD	A,1
+	LD	(QFLAG),A		; quiet mode armed
+	RET
+
+;==================================================================
+; --- Strings ---
+;==================================================================
+MBANR:	DB	CR,LF,'Music Player for CP/M 2.2, version 01.03'
+	DB	CR,LF,CR,LF
+	DB	'Welcome to the Wonderful World of COMPUTER MUSIC',CR,LF,'$'
+
+MSONG:	DB	CR,LF,'Song file? $'
+MCHGPM:	DB	CR,LF,'Do you want to change the starting parameters? $'
+MREPQ:	DB	CR,LF,'  How many repetitions ? $'
+MAGAIN:	DB	CR,LF,'Play it again, Sam? $'
+MNEWS:	DB	CR,LF,'New song? $'
+MBYE:	DB	CR,LF,LF,APOS,'Bye for now',CR,LF,'$'
+MFNF:	DB	CR,LF,'File not found',CR,LF,'$'
+MCLDVO:	DB	CR,LF,'Can',APOS,'t load voices',CR,LF,'$'
+MCRLF:	DB	CR,LF,'$'
+
+MCHP_A:	DB	CR,LF,'  Change Part $'
+MCHP_B:	DB	'? $'
+MPV_A:	DB	'    Present voice of Part $'
+MPV_B:	DB	' is $'
+MNV_A:	DB	CR,LF,'    New voice for Part $'
+MNV_B:	DB	' ? $'
+MCHTMP:	DB	CR,LF,'  Change tempo? $'
+MPRTMP:	DB	'    Present starting tempo is $'
+MNTMP:	DB	CR,LF,'    New starting tempo ? $'
+
+;==================================================================
+; FCBV -- private FCB for VOICES.MUS, pre-initialized.
+;   drive=0, name="VOICES  ", ext="MUS", FCB+12..35 = 0
+;==================================================================
+FCBV:	DB	0,'VOICES  ','MUS'
+	DS	24
+
+;==================================================================
+; --- Static variables (must be at exactly these addresses; mix
+;     loop bytes reference them directly) ---
+;==================================================================
+	ORG	055BH
+
+	DB	VOFF		; VOFFS at 055Bh, pre-init = 7Ah
+	DW	SBUF		; SADDR at 055Ch, pre-init = 0D00h
+	DW	0		; BFBAS slot at 055Eh, unused
+	DW	0		; SVDSP at 0560h, runtime saved SP
+
+;==================================================================
+; --- Untouched mix/play loop -- byte-identical to CDOS PLAY.COM
+;     (memory 0562h..0622h).  Audio sample-rate timing is preserved
+;     exactly because every instruction byte and address is the
+;     same as in PLAYCDOS.MAC.  The L05D4 wedge is INTENTIONAL --
+;     it accounts for the per-iteration timing the CDOS mix loop
+;     was designed around.
+;==================================================================
+	ORG	0562H
+
+;-- PLSNG: 0562h .. 0578h --
+	LD	(SVDSP),SP		; 0562: ED 73 60 05
+	LD	A,(VOFFS)		; 0566: 3A 5B 05
+	LD	(05B0H),A		; 0569: 32 B0 05
+	LD	(05B6H),A		; 056C: 32 B6 05
+	LD	(05BDH),A		; 056F: 32 BD 05
+	LD	(05C3H),A		; 0572: 32 C3 05
+	LD	SP,(SADDR)		; 0575: ED 7B 5C 05
+
+;-- NXCMD: 0579h .. 0583h --
+NXCMD:
+	POP	BC			; 0579: C1
+	XOR	A			; 057A: AF
+	OR	C			; 057B: B1
+	JP	NZ,DSPCMD		; 057C: C2 84 05
+	LD	SP,(SVDSP)		; 057F: ED 7B 60 05
+	RET				; 0583: C9
+
+;-- DSPCMD: 0584h --
+DSPCMD:
+	RR	B			; 0584: CB 18
+	JP	NC,L058D		; 0586: D2 8D 05
+	POP	HL			; 0589: E1
+	LD	(V1STIM),HL		; 058A: 22 E0 05
+L058D:
+	RR	B			; 058D: CB 18
+	JP	NC,L0596		; 058F: D2 96 05
+	POP	HL			; 0592: E1
+	LD	(V2STIM),HL		; 0593: 22 EE 05
+L0596:
+	RR	B			; 0596: CB 18
+	JP	NC,L059F		; 0598: D2 9F 05
+	POP	HL			; 059B: E1
+	LD	(V3STIM),HL		; 059C: 22 FE 05
+L059F:
+	RR	B			; 059F: CB 18
+	JP	NC,L05A8		; 05A1: D2 A8 05
+	POP	HL			; 05A4: E1
+	LD	(V4STIM),HL		; 05A5: 22 0C 06
+L05A8:
+	RR	B			; 05A8: CB 18
+	JP	NC,L05C7		; 05AA: D2 C7 05
+	POP	HL			; 05AD: E1
+	LD	A,L			; 05AE: 7D
+	SUB	0			; 05AF: D6 00  <- patched at PLSNG
+	LD	(V1PGIM),A		; 05B1: 32 E8 05
+	LD	A,H			; 05B4: 7C
+	SUB	0			; 05B5: D6 00  <- patched
+	LD	(V2PGIM),A		; 05B7: 32 F6 05
+	POP	HL			; 05BA: E1
+	LD	A,L			; 05BB: 7D
+	SUB	0			; 05BC: D6 00  <- patched
+	LD	(V3PGIM),A		; 05BE: 32 06 06
+	LD	A,H			; 05C1: 7C
+	SUB	0			; 05C2: D6 00  <- patched
+	LD	(V4PGIM),A		; 05C4: 32 14 06
+L05C7:
+	RR	B			; 05C7: CB 18
+	JP	NC,L05D1		; 05C9: D2 D1 05
+	POP	HL			; 05CC: E1
+	LD	A,L			; 05CD: 7D
+	LD	(TMPIMM),A		; 05CE: 32 DB 05
+L05D1:
+	JP	OUTITR			; 05D1: C3 DA 05
+
+;-- Wedge between INRLP iterations -- DO NOT REMOVE: provides
+;   the per-sample timing that defines the CDOS playback rate.
+L05D4:
+	NOP				; 05D4: 00
+	LD	A,0			; 05D5: 3E 00
+	JP	INRLP			; 05D7: C3 DC 05
+
+;-- OUTITR / INRLP --
+OUTITR:
+	LD	B,0			; 05DA: 06 00  <- TMPIMM at 05DBh
+INRLP:
+	LD	HL,0			; 05DC: 21 00 00 (V1 phase at 05DDh)
+	LD	DE,0			; 05DF: 11 00 00 (V1STIM at 05E0h)
+	ADD	HL,DE			; 05E2: 19
+	LD	(05DDH),HL		; 05E3: 22 DD 05
+	LD	L,H			; 05E6: 6C
+	LD	H,0			; 05E7: 26 00  (V1PGIM at 05E8h)
+	LD	A,(HL)			; 05E9: 7E
+	LD	HL,0			; 05EA: 21 00 00 (V2 phase at 05EBh)
+	LD	DE,0			; 05ED: 11 00 00 (V2STIM at 05EEh)
+	ADD	HL,DE			; 05F0: 19
+	LD	(05EBH),HL		; 05F1: 22 EB 05
+	LD	L,H			; 05F4: 6C
+	LD	H,0			; 05F5: 26 00  (V2PGIM at 05F6h)
+	ADD	A,(HL)			; 05F7: 86
+	OUT	(AN1),A			; 05F8: D3 19
+	LD	HL,0			; 05FA: 21 00 00 (V3 phase at 05FBh)
+	LD	DE,0			; 05FD: 11 00 00 (V3STIM at 05FEh)
+	ADD	HL,DE			; 0600: 19
+	LD	(05FBH),HL		; 0601: 22 FB 05
+	LD	L,H			; 0604: 6C
+	LD	H,0			; 0605: 26 00  (V3PGIM at 0606h)
+	LD	A,(HL)			; 0607: 7E
+	LD	HL,0			; 0608: 21 00 00 (V4 phase at 0609h)
+	LD	DE,0			; 060B: 11 00 00 (V4STIM at 060Ch)
+	ADD	HL,DE			; 060E: 19
+	LD	(0609H),HL		; 060F: 22 09 06
+	LD	L,H			; 0612: 6C
+	LD	H,0			; 0613: 26 00  (V4PGIM at 0614h)
+	ADD	A,(HL)			; 0615: 86
+	OUT	(AN3),A			; 0616: D3 1B
+	DEC	B			; 0618: 05
+	JP	NZ,L05D4		; 0619: C2 D4 05  (INRLP -> wedge)
+	DEC	C			; 061C: 0D
+	JP	NZ,OUTITR		; 061D: C2 DA 05
+	JP	NXCMD			; 0620: C3 79 05
+
+;==================================================================
+; --- Post-mix-loop area: parser, line buffer, stack ---
+;==================================================================
+	ORG	0623H
+
+;==================================================================
+; PARSE -- parse the typed line in LBUF into the default FCB.
+;   Inputs: LBUF[0]=max, LBUF[1]=count, LBUF[2..]=text
+;   Outputs: DFCB filled with drive=0, name+ext, FCB+12..35 zero
+;   Drive prefix not supported (default drive only).
+;==================================================================
+PARSE:
+	LD	A,(LBUF+1)
+	OR	A
+	RET	Z			; empty input -> done
+	LD	B,A			; B = char count
+	LD	HL,LBUF+2		; HL = first typed char
+	;
+	; Initialize DFCB: drive=0, name+ext = spaces, +12..35 = 0
+	XOR	A
+	LD	(DFCB),A
+	LD	DE,DFCB+1
+	PUSH	HL
+	PUSH	BC
+	LD	A,' '
+	LD	B,11
+PSP:
+	LD	(DE),A
+	INC	DE
+	DJNZ	PSP
+	LD	B,24
+	XOR	A
+PCL:
+	LD	(DE),A
+	INC	DE
+	DJNZ	PCL
+	POP	BC
+	POP	HL
+	;
+	; Copy name into DFCB+1..8, uppercasing letters, stopping on
+	; '.', ' ', or end of input.
+	LD	DE,DFCB+1
+	LD	C,8
+PFNLP:
+	LD	A,(HL)
+	CP	' '
+	RET	Z
+	CP	'.'
+	JR	Z,PDOTGO
+	CP	'a'
+	JR	C,PFNST
+	AND	0DFH		; clear bit 5 -> uppercase
+PFNST:
+	LD	(DE),A
+	INC	DE
+	INC	HL
+	DEC	B
+	RET	Z
+	DEC	C
+	JR	NZ,PFNLP
+	;
+	; Name field full -- skip until '.' or end.
+PSKIP:
+	LD	A,(HL)
+	CP	'.'
+	JR	Z,PDOTGO
+	INC	HL
+	DEC	B
+	RET	Z
+	JR	PSKIP
+	;
+	; '.' found -- copy up to 3 chars into DFCB+9..11.
+PDOTGO:
+	INC	HL		; consume the '.'
+	DEC	B
+	RET	Z
+	LD	DE,DFCB+9
+	LD	C,3
+PEXLP:
+	LD	A,(HL)
+	CP	' '
+	RET	Z
+	CP	'a'
+	JR	C,PEXST
+	AND	0DFH
+PEXST:
+	LD	(DE),A
+	INC	DE
+	INC	HL
+	DEC	B
+	RET	Z
+	DEC	C
+	JR	NZ,PEXLP
+	RET
+
+;==================================================================
+; LBUF -- console-input line buffer (LBUFM bytes of text + 2-byte
+;         header for BDOS function 10)
+;==================================================================
+LBUF:	DS	LBUFM + 2
+
+;==================================================================
+; PCHANG state -- current voice-byte pointer and part number
+;==================================================================
+CURPTR:	DS	2
+CURPRT:	DS	1
+
+;==================================================================
+; QFLAG -- 1 if the command tail contained /Q (or /q), 0 otherwise.
+; Set by CHKQ at MAIN entry; read at the three prompt sites.
+;==================================================================
+QFLAG:	DS	1
+
+;==================================================================
+; STKBUF / STKTOP -- private 48-byte stack.  PUSH grows down from
+; STKTOP, so STKTOP is the address one past the buffer end.
+;==================================================================
+	DS	48
+STKTOP:
+
+	END	100H
+

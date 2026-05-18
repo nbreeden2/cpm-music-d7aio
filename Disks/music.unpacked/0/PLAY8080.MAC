@@ -1,0 +1,852 @@
+        TITLE   PLAYCPM - Music Player for CP/M 2.2 with Cromemco D+7A
+
+;==================================================================
+; PLAYCPM.MAC
+;
+; 8080 port of PLAY.COM (originally Z80 / Cromemco CDOS).
+; Plays .MUS songs on a Cromemco D+7A I/O card via two analog DACs.
+;
+;   Voices  1 + 2  -> port 19h  (analog channel 1)
+;   Voices  3 + 4  -> port 1Bh  (analog channel 3)
+;
+; VOICES.MUS must be on the current drive at startup; it provides
+; six 256-byte signed PCM single-cycle wavetables.
+;
+; Usage:
+;     PLAYCPM SONG.MUS    (or)    PLAYCPM
+; If no command-line argument, the program prompts for a song name.
+; The .MUS extension is supplied automatically if you omit it.
+;
+; Differences from the original CDOS version:
+;   * Pure 8080 instructions only; no IX/IY, no ED/CB/DD prefixes,
+;     no JR/DJNZ, no LD (nn),SP.
+;   * Filename parsing is done in-program rather than via the CDOS
+;     BDOS function 0x86 (which CP/M 2.2 does not provide).
+;   * Song buffer is a fixed 16 KB region rather than "everything up
+;     to BDOS"; songs larger than 16384 bytes will report
+;     "Song file is too long to play".
+;
+; Build with M80/L80:
+;     M80 =PLAYCPM
+;     L80 PLAYCPM,PLAYCPM/N/E
+;==================================================================
+
+;-- BDOS entry / common addresses ----------------------------------
+BDOS    EQU     0005H
+WBOOT   EQU     0000H
+DFCB    EQU     005CH           ; default FCB (filled by CCP from cmdline)
+
+;-- BDOS function codes --------------------------------------------
+CINP    EQU     1               ; console input (1 char + echo)
+COUT    EQU     2               ; console output (E = char)
+PSTR    EQU     9               ; print $-terminated string at DE
+RDLN    EQU     10              ; read buffered console line
+OPEN    EQU     15              ; open file (DE = FCB)
+CLOSE   EQU     16              ; close file
+RDSEQ   EQU     20              ; read sequential record (128 bytes)
+SETDMA  EQU     26              ; set DMA address (DE = addr)
+
+;-- Cromemco D+7A I/O card -----------------------------------------
+AN1_PORT EQU    19H             ; analog channel 1 -> voices 1+2
+AN3_PORT EQU    1BH             ; analog channel 3 -> voices 3+4
+
+;-- ASCII ----------------------------------------------------------
+CR      EQU     0DH
+LF      EQU     0AH
+APOS    EQU     27H             ; apostrophe (avoid '...''...' quoting)
+
+LBUFMAX EQU     64              ; max input chars per line
+
+;-- Defaults if a song never sets these via dispatch ---------------
+DEF_TEMPO EQU   40H
+
+        ASEG
+        ORG     100H
+
+;==================================================================
+; ENTRY
+;==================================================================
+start:
+        LXI     SP,stack_top
+        LXI     D,banner_msg
+        CALL    puts
+        ;
+        CALL    load_voices
+        JNC     ck_cmdline
+        LXI     D,err_voices
+        CALL    puts
+        JMP     WBOOT
+        ;
+        ; If a filename was passed on the command line, the CCP has
+        ; already parsed it into the default FCB at 005Ch.
+ck_cmdline:
+        LDA     DFCB+1
+        CPI     ' '
+        JZ      song_loop       ; blank -> prompt
+        LXI     H,DFCB
+        LXI     D,fcb_song
+        MVI     B,12            ; drive + name(8) + ext(3)
+        CALL    copy_block
+        LXI     H,fcb_song+12
+        MVI     B,24
+        CALL    zero_block
+        JMP     song_load
+        ;
+song_loop:
+        LXI     D,prompt_song
+        CALL    puts
+        CALL    read_filename
+        JZ      song_loop       ; blank line -> ask again
+song_load:
+        CALL    load_song
+        JC      song_loop
+        ;
+        LXI     D,prompt_chgparam
+        CALL    puts
+        CALL    read_yn
+        CNZ     change_params
+        ;
+        LXI     D,prompt_reps
+        CALL    puts
+        CALL    read_byte
+        ORA     A
+        JNZ     reps_set
+        MVI     A,1
+reps_set:
+        STA     reps_count
+        ;
+play_again:
+        CALL    play_song
+        LDA     reps_count
+        DCR     A
+        STA     reps_count
+        JNZ     play_again
+        ;
+        LXI     D,prompt_again
+        CALL    puts
+        CALL    read_yn
+        JZ      ask_new
+        MVI     A,1
+        STA     reps_count
+        JMP     play_again
+        ;
+ask_new:
+        LXI     D,prompt_newsong
+        CALL    puts
+        CALL    read_yn
+        JNZ     song_loop
+        ;
+        LXI     D,msg_bye
+        CALL    puts
+        JMP     WBOOT
+
+;==================================================================
+; puts  - print $-terminated string at DE  (tail-call to BDOS)
+; putch - print character in A             (tail-call to BDOS)
+;==================================================================
+puts:
+        MVI     C,PSTR
+        JMP     BDOS
+        ;
+putch:
+        MOV     E,A
+        MVI     C,COUT
+        JMP     BDOS
+
+;==================================================================
+; read_yn - read one Y/N character with echo, then CR/LF.
+;   Out: A=1, NZ if Y/y
+;        A=0, Z otherwise
+;==================================================================
+read_yn:
+        MVI     C,CINP
+        CALL    BDOS
+        ANI     5FH             ; uppercase
+        PUSH    PSW
+        LXI     D,msg_crlf
+        CALL    puts
+        POP     PSW
+        CPI     'Y'
+        JNZ     ryn_no
+        MVI     A,1
+        ORA     A
+        RET
+ryn_no:
+        XRA     A
+        RET
+
+;==================================================================
+; read_byte - read a decimal byte from console (0..255).
+;   Out: A = parsed value (0 if blank/invalid; wraps mod 256 for
+;        inputs > 255)
+;==================================================================
+read_byte:
+        MVI     A,LBUFMAX
+        STA     line_buf
+        LXI     D,line_buf
+        MVI     C,RDLN
+        CALL    BDOS
+        LXI     D,msg_crlf
+        CALL    puts
+        ;
+        LDA     line_buf+1
+        MOV     B,A
+        LXI     H,line_buf+2
+        MVI     C,0
+rb_loop:
+        MOV     A,B
+        ORA     A
+        JZ      rb_done
+        MOV     A,M
+        SUI     '0'
+        JC      rb_done
+        CPI     10
+        JNC     rb_done
+        MOV     E,A             ; save digit
+        MOV     A,C
+        ADD     A               ; *2
+        MOV     C,A
+        ADD     A               ; *4
+        ADD     A               ; *8
+        ADD     C               ; *10
+        ADD     E
+        MOV     C,A
+        INX     H
+        DCR     B
+        JMP     rb_loop
+rb_done:
+        MOV     A,C
+        RET
+
+;==================================================================
+; print_byte - print A as decimal (0..255), suppressing only the
+; leading hundreds digit if zero.
+;==================================================================
+print_byte:
+        MVI     B,'0'
+ph_loop:
+        SUI     100
+        JC      ph_done
+        INR     B
+        JMP     ph_loop
+ph_done:
+        ADI     100             ; restore last under-flow
+        PUSH    PSW
+        MOV     A,B
+        CPI     '0'
+        JZ      ph_skip
+        CALL    putch
+ph_skip:
+        POP     PSW
+        ;
+        MVI     B,'0'
+pt_loop:
+        SUI     10
+        JC      pt_done
+        INR     B
+        JMP     pt_loop
+pt_done:
+        ADI     10
+        PUSH    PSW
+        MOV     A,B
+        CALL    putch
+        POP     PSW
+        ADI     '0'
+        JMP     putch
+
+;==================================================================
+; read_filename - read a buffered line and parse "<d>:<name>.<ext>"
+; into fcb_song. Defaults extension to MUS when none is supplied.
+;   Out: NZ if a filename was given, Z if blank line.
+;==================================================================
+read_filename:
+        MVI     A,LBUFMAX
+        STA     line_buf
+        LXI     D,line_buf
+        MVI     C,RDLN
+        CALL    BDOS
+        LXI     D,msg_crlf
+        CALL    puts
+        ;
+        LDA     line_buf+1
+        ORA     A
+        RZ
+        ;
+        MOV     C,A
+        LXI     H,line_buf+2
+rfn_skipsp:
+        MOV     A,C
+        ORA     A
+        RZ
+        MOV     A,M
+        CPI     ' '
+        JNZ     rfn_init
+        INX     H
+        DCR     C
+        JMP     rfn_skipsp
+        ;
+rfn_init:
+        ; FCB drive byte -> 0 (current drive)
+        XRA     A
+        STA     fcb_song
+        ; Filename + ext -> 11 spaces
+        LXI     D,fcb_song+1
+        MVI     B,11
+        MVI     A,' '
+rfn_sploop:
+        STAX    D
+        INX     D
+        DCR     B
+        JNZ     rfn_sploop
+        ; Variable FCB fields -> zero
+        LXI     D,fcb_song+12
+        MVI     B,24
+        XRA     A
+rfn_zloop:
+        STAX    D
+        INX     D
+        DCR     B
+        JNZ     rfn_zloop
+        ;
+        ; Detect drive prefix "X:"
+        MOV     A,C
+        CPI     2
+        JC      rfn_name
+        MOV     A,M
+        INX     H
+        MOV     B,A             ; first char
+        MOV     A,M             ; second char
+        CPI     ':'
+        JZ      rfn_drv
+        DCX     H
+        JMP     rfn_name
+rfn_drv:
+        INX     H               ; skip ':'
+        DCR     C
+        DCR     C
+        MOV     A,B
+        CALL    upcase
+        SUI     'A'-1
+        STA     fcb_song
+        ;
+rfn_name:
+        LXI     D,fcb_song+1
+        MVI     B,8             ; max name chars
+rfn_nloop:
+        MOV     A,C
+        ORA     A
+        JZ      rfn_default
+        MOV     A,M
+        CPI     '.'
+        JZ      rfn_dot
+        CPI     ' '
+        JZ      rfn_default
+        MOV     A,B
+        ORA     A
+        JZ      rfn_skipchar    ; out of room, scan to '.'
+        MOV     A,M
+        CALL    upcase
+        STAX    D
+        INX     D
+        DCR     B
+rfn_skipchar:
+        INX     H
+        DCR     C
+        JMP     rfn_nloop
+        ;
+rfn_dot:
+        INX     H
+        DCR     C
+        LXI     D,fcb_song+9
+        MVI     B,3
+rfn_eloop:
+        MOV     A,C
+        ORA     A
+        JZ      rfn_ok
+        MOV     A,M
+        CPI     ' '
+        JZ      rfn_ok
+        MOV     A,B
+        ORA     A
+        JZ      rfn_ok
+        MOV     A,M
+        CALL    upcase
+        STAX    D
+        INX     D
+        DCR     B
+        INX     H
+        DCR     C
+        JMP     rfn_eloop
+        ;
+rfn_default:
+        MVI     A,'M'
+        STA     fcb_song+9
+        MVI     A,'U'
+        STA     fcb_song+10
+        MVI     A,'S'
+        STA     fcb_song+11
+rfn_ok:
+        MVI     A,1
+        ORA     A
+        RET
+
+;==================================================================
+; upcase - if A is 'a'..'z', subtract 20h
+;==================================================================
+upcase:
+        CPI     'a'
+        RC
+        CPI     'z'+1
+        RNC
+        SUI     20H
+        RET
+
+;==================================================================
+; copy_block - HL=src, DE=dst, B=count   (count must be > 0)
+; zero_block - HL=addr, B=count
+;==================================================================
+copy_block:
+cb_lp:  MOV     A,M
+        STAX    D
+        INX     H
+        INX     D
+        DCR     B
+        JNZ     cb_lp
+        RET
+        ;
+zero_block:
+        XRA     A
+zb_lp:  MOV     M,A
+        INX     H
+        DCR     B
+        JNZ     zb_lp
+        RET
+
+;==================================================================
+; load_voices - load VOICES.MUS (12 records, 1536 bytes) into the
+; voice bank at VOICES_LOAD.
+;   Out: CY=0 ok, CY=1 error
+;==================================================================
+load_voices:
+        LXI     H,fcb_voices_init
+        LXI     D,fcb_voices
+        MVI     B,12
+        CALL    copy_block
+        LXI     H,fcb_voices+12
+        MVI     B,24
+        CALL    zero_block
+        ;
+        LXI     D,fcb_voices
+        MVI     C,OPEN
+        CALL    BDOS
+        INR     A
+        JZ      lv_err
+        ;
+        LXI     H,VOICES_LOAD
+        MVI     B,12            ; 12 * 128 = 1536
+lv_loop:
+        PUSH    B
+        PUSH    H
+        XCHG
+        MVI     C,SETDMA
+        CALL    BDOS
+        LXI     D,fcb_voices
+        MVI     C,RDSEQ
+        CALL    BDOS
+        ORA     A
+        JNZ     lv_fail
+        POP     H
+        POP     B
+        LXI     D,80H
+        DAD     D
+        DCR     B
+        JNZ     lv_loop
+        ORA     A               ; CY=0
+        RET
+lv_fail:
+        POP     H
+        POP     B
+lv_err:
+        STC
+        RET
+
+;==================================================================
+; load_song - load fcb_song into SONG_BUF up to MAX_REC records.
+; Prints "File not found" or "Song file is too long to play" on err.
+;   Out: CY=0 ok, CY=1 error
+;==================================================================
+load_song:
+        LXI     H,fcb_song+12
+        MVI     B,24
+        CALL    zero_block
+        ;
+        LXI     D,fcb_song
+        MVI     C,OPEN
+        CALL    BDOS
+        INR     A
+        JZ      ls_notfound
+        ;
+        LXI     H,SONG_BUF
+        MVI     B,MAX_REC
+ls_loop:
+        PUSH    B
+        PUSH    H
+        XCHG
+        MVI     C,SETDMA
+        CALL    BDOS
+        LXI     D,fcb_song
+        MVI     C,RDSEQ
+        CALL    BDOS
+        ORA     A
+        JNZ     ls_eofchk
+        POP     H
+        POP     B
+        LXI     D,80H
+        DAD     D
+        DCR     B
+        JNZ     ls_loop
+        LXI     D,err_toolong
+        CALL    puts
+        STC
+        RET
+ls_eofchk:
+        POP     H
+        POP     B
+        CPI     1               ; 1 = EOF, ok
+        JNZ     ls_err
+        ORA     A               ; CY=0
+        RET
+ls_err:
+ls_notfound:
+        LXI     D,err_filenotfound
+        CALL    puts
+        STC
+        RET
+
+;==================================================================
+; change_params - interactive parameter-change UI.
+; Patches bytes 10..14 of the loaded song, which are the operand
+; bytes of the song's first "set voices/tempo" command.
+;==================================================================
+change_params:
+        LXI     H,SONG_BUF + 10
+        MVI     C,1                ; current part number 1..4
+cp_part:
+        PUSH    H
+        PUSH    B
+        LXI     D,msg_chgpart_a
+        CALL    puts
+        POP     B               ; puts trashed C; restore part number
+        PUSH    B
+        MOV     A,C
+        ADI     '0'
+        CALL    putch
+        LXI     D,msg_chgpart_b
+        CALL    puts
+        CALL    read_yn
+        POP     B
+        POP     H
+        JZ      cp_skip
+        ;
+        ; "    Present voice of Part N is V"
+        PUSH    H
+        PUSH    B
+        LXI     D,msg_present_a
+        CALL    puts
+        POP     B
+        PUSH    B
+        MOV     A,C
+        ADI     '0'
+        CALL    putch
+        LXI     D,msg_present_b
+        CALL    puts
+        POP     B
+        POP     H
+        ;
+        PUSH    H
+        PUSH    B
+        MOV     A,M
+        ANI     7FH                ; mask off the 80h marker bit
+        ADI     '0'
+        CALL    putch
+        LXI     D,msg_crlf
+        CALL    puts
+        POP     B
+        POP     H
+        ;
+        ; "    New voice for Part N ? "
+        PUSH    H
+        PUSH    B
+        LXI     D,msg_newv_a
+        CALL    puts
+        POP     B
+        PUSH    B
+        MOV     A,C
+        ADI     '0'
+        CALL    putch
+        LXI     D,msg_newv_b
+        CALL    puts
+        CALL    read_byte
+        ORI     80H                ; voice byte format: 0x80 | index
+        POP     B
+        POP     H
+        MOV     M,A
+cp_skip:
+        INX     H
+        INR     C
+        MOV     A,C
+        CPI     5
+        JNZ     cp_part
+        ;
+        ; HL now points to song+14 (tempo byte).  puts and read_yn
+        ; both clobber HL, so we must save it across them or the
+        ; "present tempo" display reads from a random address and
+        ; the "new tempo" gets stored to garbage.
+        PUSH    H
+        LXI     D,msg_chgtempo
+        CALL    puts
+        CALL    read_yn
+        POP     H
+        RZ
+        ;
+        PUSH    H
+        LXI     D,msg_prestempo
+        CALL    puts
+        POP     H
+        PUSH    H
+        MOV     A,M
+        CALL    print_byte
+        LXI     D,msg_crlf
+        CALL    puts
+        ;
+        LXI     D,msg_newtempo
+        CALL    puts
+        CALL    read_byte
+        POP     H
+        MOV     M,A
+        RET
+
+;==================================================================
+; play_song - play the loaded song.
+;
+; Redirects SP to SONG_BUF and pulls 16-bit command words off the
+; "stack" with POP. NO subroutine CALLs are permitted between the
+; SP swap; everything is inline so PUSHes don't corrupt the song.
+;
+; Command word: B = parameter bitmap, C = duration (samples / 256;
+;               C=0 marks end-of-song)
+;
+; Bits in B select which 16-bit parameter words follow:
+;   bit 0 -> voice 1 phase increment
+;   bit 1 -> voice 2 phase increment
+;   bit 2 -> voice 3 phase increment
+;   bit 3 -> voice 4 phase increment
+;   bit 4 -> two words of voice-page bytes (v1|v2 then v3|v4)
+;   bit 5 -> tempo word (low byte = inner-loop counter reload)
+;==================================================================
+play_song:
+        ; Reset all phase accumulators
+        LXI     H,0
+        SHLD    v1_phase
+        SHLD    v2_phase
+        SHLD    v3_phase
+        SHLD    v4_phase
+        ;
+        ; Save real SP, redirect SP to song stream
+        LXI     H,0
+        DAD     SP
+        SHLD    saved_sp
+        LXI     H,SONG_BUF
+        SPHL
+        ;
+ps_next:
+        POP     B               ; B=bitmap, C=duration
+        MOV     A,C
+        ORA     A
+        JZ      ps_end
+        ;
+        ; Save bitmap so per-bit actions can clobber A freely
+        MOV     A,B
+        STA     ps_bm
+        ;
+        ANI     1
+        JZ      ps_b1
+        POP     H
+        SHLD    v1_step
+ps_b1:  LDA     ps_bm
+        ANI     2
+        JZ      ps_b2
+        POP     H
+        SHLD    v2_step
+ps_b2:  LDA     ps_bm
+        ANI     4
+        JZ      ps_b3
+        POP     H
+        SHLD    v3_step
+ps_b3:  LDA     ps_bm
+        ANI     8
+        JZ      ps_b4
+        POP     H
+        SHLD    v4_step
+ps_b4:  LDA     ps_bm
+        ANI     10H
+        JZ      ps_b5
+        ; Two words of voice bytes; each byte is 0x81+index in the
+        ; song stream and the wavetables live at HIGH(VOICES_LOAD)+index.
+        POP     H               ; HL = (v1) | (v2 << 8)
+        MOV     A,L
+        SUI     VOFFSET
+        STA     v1_voice
+        MOV     A,H
+        SUI     VOFFSET
+        STA     v2_voice
+        POP     H               ; HL = (v3) | (v4 << 8)
+        MOV     A,L
+        SUI     VOFFSET
+        STA     v3_voice
+        MOV     A,H
+        SUI     VOFFSET
+        STA     v4_voice
+ps_b5:  LDA     ps_bm
+        ANI     20H
+        JZ      ps_run
+        POP     H               ; only L used
+        MOV     A,L
+        STA     ps_tempo
+        ;
+ps_run:
+        ; Outer loop: C iterations of the inner sample loop
+ps_outer:
+        MVI     B,DEF_TEMPO     ; reload (immediate is patched by bit 5)
+ps_tempo EQU $-1
+ps_inner:
+        ;
+        ; -------- Voice 1 --------
+        LXI     H,0
+v1_phase EQU $-2
+        LXI     D,0
+v1_step  EQU $-2
+        DAD     D
+        SHLD    v1_phase
+        MOV     L,H
+        MVI     H,HIGH VOICES_LOAD
+v1_voice EQU $-1
+        MOV     A,M
+        ;
+        ; -------- Voice 2 --------
+        LXI     H,0
+v2_phase EQU $-2
+        LXI     D,0
+v2_step  EQU $-2
+        DAD     D
+        SHLD    v2_phase
+        MOV     L,H
+        MVI     H,HIGH VOICES_LOAD
+v2_voice EQU $-1
+        ADD     M
+        OUT     AN1_PORT
+        ;
+        ; -------- Voice 3 --------
+        LXI     H,0
+v3_phase EQU $-2
+        LXI     D,0
+v3_step  EQU $-2
+        DAD     D
+        SHLD    v3_phase
+        MOV     L,H
+        MVI     H,HIGH VOICES_LOAD
+v3_voice EQU $-1
+        MOV     A,M
+        ;
+        ; -------- Voice 4 --------
+        LXI     H,0
+v4_phase EQU $-2
+        LXI     D,0
+v4_step  EQU $-2
+        DAD     D
+        SHLD    v4_phase
+        MOV     L,H
+        MVI     H,HIGH VOICES_LOAD
+v4_voice EQU $-1
+        ADD     M
+        OUT     AN3_PORT
+        ;
+        DCR     B
+        JNZ     ps_inner
+        DCR     C
+        JNZ     ps_outer
+        JMP     ps_next
+        ;
+ps_end:
+        LHLD    saved_sp
+        SPHL
+        RET
+
+;==================================================================
+; Strings
+;==================================================================
+banner_msg:
+        DB      CR,LF,'Music Player for CP/M 2.2, version 01.01',CR,LF
+        DB      CR,LF,'Welcome to the Wonderful World of COMPUTER MUSIC',CR,LF,'$'
+
+prompt_song:        DB CR,LF,'Song file? $'
+prompt_chgparam:    DB CR,LF,'Do you want to change the starting parameters? $'
+prompt_reps:        DB CR,LF,'  How many repetitions ? $'
+prompt_again:       DB CR,LF,'Play it again, Sam? $'
+prompt_newsong:     DB CR,LF,'New song? $'
+
+msg_chgpart_a:      DB CR,LF,'  Change Part $'
+msg_chgpart_b:      DB '? $'
+msg_present_a:      DB '    Present voice of Part $'
+msg_present_b:      DB ' is $'
+msg_newv_a:         DB CR,LF,'    New voice for Part $'
+msg_newv_b:         DB ' ? $'
+msg_chgtempo:       DB CR,LF,'  Change tempo? $'
+msg_prestempo:      DB '    Present starting tempo is $'
+msg_newtempo:       DB CR,LF,'    New starting tempo ? $'
+
+msg_bye:            DB CR,LF,LF,APOS,'Bye for now',CR,LF,'$'
+msg_crlf:           DB CR,LF,'$'
+
+err_filenotfound:   DB CR,LF,'File not found',CR,LF,'$'
+err_toolong:        DB CR,LF,'Song file is too long to play',CR,LF,'$'
+err_voices:         DB CR,LF,'Can',APOS,'t load voices',CR,LF,'$'
+
+;==================================================================
+; FCB template for VOICES.MUS
+;==================================================================
+fcb_voices_init:
+        DB      0,'VOICES  ','MUS'        ; drive=0, "VOICES  ", "MUS"
+
+;==================================================================
+; Variables (uninitialized; set up at runtime)
+;==================================================================
+fcb_voices:         DS      36
+fcb_song:           DS      36
+line_buf:           DS      LBUFMAX + 2
+ps_bm:              DS      1
+saved_sp:           DS      2
+reps_count:         DS      1
+
+        DS      64
+stack_top:
+
+program_end EQU $
+
+;==================================================================
+; Memory layout (computed at assembly time from program_end)
+;
+;   VOICES_LOAD = next page boundary above program_end
+;   SONG_BUF    = VOICES_LOAD + 0600h (just past the 6-page voice bank)
+;   MAX_REC     = number of 128-byte records the song buffer can hold
+;
+; VOFFSET is the constant subtracted from voice bytes in the song
+; stream to map 0x81+index onto HIGH(VOICES_LOAD)+index.
+;==================================================================
+VOICES_LOAD     EQU     (program_end + 0FFH) AND 0FF00H
+SONG_BUF        EQU     VOICES_LOAD + 600H
+MAX_REC         EQU     128                ; 128 * 128 = 16 KB
+VOFFSET         EQU     81H - HIGH VOICES_LOAD
+
+        END     start
+

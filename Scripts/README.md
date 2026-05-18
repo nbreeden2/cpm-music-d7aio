@@ -48,11 +48,12 @@ or `Voice_Tests/`.
 
 | Script | Purpose |
 |---|---|
-| [`midi2mus.py`](midi2mus.py) | Convert a MIDI file into a `.MUS` file.  Four `--voices` modes: `1` (solo line with chord-moment detection, e.g. cello suites; V1+V3 doubled when monophonic, allocated across V1/V2/V3 for 2- and 3-note chords), `2` (Bach inventions: V1+V3 doubled, V2+V4 doubled), `3` (sinfonias, three independent voices), `2of3` (sinfonia with BACH-style soprano octave doubling).  Honors MIDI tempo changes (rubato, ritardando) by varying the per-command `dur` byte; `TEMPO_BYTE` stays at 140 throughout so no player-side support is required.  `--tuning CENTS` offsets from concert A=440 (default 0; use `-26` to match the original BACH .MUS files on the calibrated 11,169 Hz hardware).  `--timbres V1,V2,V3,V4` overrides the mode's default timbre routing (e.g. `2,2,2,0` puts triangle on all active voices for a chiptune feel).  `--merge` (mode `1` only) reads notes from every track instead of just track 1, dropping MIDI channel 9 (GM drums) -- used for multi-track game-music arrangements. |
+| [`midi2mus.py`](midi2mus.py) | Convert a MIDI file into a `.MUS` file.  Five `--voices` modes: `1` (solo line with chord-moment detection, e.g. cello suites; V1+V3 doubled when monophonic, allocated across V1/V2/V3 for 2- and 3-note chords), `2` (Bach inventions: V1+V3 doubled, V2+V4 doubled), `3` (sinfonias, three independent voices), `4` (SATB chorales and 4-voice fugues: V1..V4 fully independent, default timbres sine/saw/square/sine so every voice plays at written pitch), `2of3` (sinfonia with BACH-style soprano octave doubling).  Honors MIDI tempo changes (rubato, ritardando) by varying the per-command `dur` byte; `TEMPO_BYTE` stays at 140 throughout so no player-side support is required.  `--tuning CENTS` offsets from concert A=440 (default 0; use `-26` to match the original BACH .MUS files on the calibrated 11,169 Hz hardware).  `--timbres V1,V2,V3,V4` overrides the mode's default timbre routing (e.g. `2,2,2,0` puts triangle on all active voices for a chiptune feel).  `--merge` (mode `1` only) reads notes from every track instead of just track 1, dropping MIDI channel 9 (GM drums) -- used for multi-track game-music arrangements. |
 
 ```
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 2            # invention
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1            # solo cello
+python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 4            # SATB chorale / 4-voice fugue
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1 --tuning -26  # match BACH originals
 python Scripts/midi2mus.py SRC.MID OUT.MUS --voices 1 --merge --timbres 2,2,2,0  # chiptune
 ```

@@ -14,3 +14,7 @@ Thumbs.db
 
 # Reference PDFs (Bach sheet music etc. — kept locally, not part of repo)
 *.pdf
+
+# Simulator output / voice-audition WAVs - regeneratable from .MUS via
+# Scripts/simulate.py and Scripts/build_voices.py; do not commit
+*.wav
